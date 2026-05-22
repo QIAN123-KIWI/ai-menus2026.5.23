@@ -1,0 +1,42 @@
+@import url("https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Noto+Sans+JP:wght@400;500;700;900&family=Noto+Sans+SC:wght@400;500;700;900&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #321b0d;
+  background:
+    radial-gradient(circle at top, rgba(255, 246, 232, 0.95), transparent 35%),
+    linear-gradient(180deg, #ead2ab 0%, #f2e3cc 28%, #f6ead8 100%);
+  font-family: "Noto Sans SC", "Noto Sans JP", sans-serif;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(123, 78, 33, 0.24);
+  border-radius: 999px;
+}
+
+.font-display {
+  font-family: "Cormorant Garamond", serif;
+}
