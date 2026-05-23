@@ -17,13 +17,18 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  clearScanResultCache,
   generateDishImageBlob,
   getDefaultSettings,
   getDishImageCacheKey,
   recognizeMenuFiles,
   sortTabs,
 } from "./ai";
-import { getCachedDishImageBlob, setCachedDishImageBlob } from "./imageCache";
+import {
+  clearCachedDishImages,
+  getCachedDishImageBlob,
+  setCachedDishImageBlob,
+} from "./imageCache";
 import { SAMPLE_MENU } from "./sampleMenu";
 import type { AppPage, MenuItem, ScanStatus, Settings } from "./types";
 
@@ -520,6 +525,13 @@ export default function App() {
     setToast("\u5DF2\u6E05\u7A7A\u5F53\u524D\u83DC\u5355\uFF0C\u8BF7\u91CD\u65B0\u5BFC\u5165");
   }
 
+  async function clearLocalCaches() {
+    clearRecognizedMenu();
+    clearScanResultCache();
+    await clearCachedDishImages().catch(() => undefined);
+    setToast("\u5DF2\u6E05\u7A7A\u672C\u5730\u8BC6\u522B\u7F13\u5B58\u548C\u83DC\u56FE\u7F13\u5B58");
+  }
+
   function resetAndReimport() {
     clearRecognizedMenu();
     setScannerOpen(true);
@@ -694,6 +706,9 @@ export default function App() {
                 onPickImages={() => inputRef.current?.click()}
                 onClearRecognizedMenu={clearRecognizedMenu}
                 onClearAndPickImages={clearAndPickImages}
+                onClearLocalCaches={() => {
+                  void clearLocalCaches();
+                }}
               />
             )}
           </AnimatePresence>
@@ -1176,6 +1191,7 @@ function ScannerSheet({
   onPickImages,
   onClearRecognizedMenu,
   onClearAndPickImages,
+  onClearLocalCaches,
 }: {
   settings: Settings;
   hasRecognizedMenu: boolean;
@@ -1185,6 +1201,7 @@ function ScannerSheet({
   onPickImages: () => void;
   onClearRecognizedMenu: () => void;
   onClearAndPickImages: () => void;
+  onClearLocalCaches: () => void;
 }) {
   return (
     <>
@@ -1301,6 +1318,10 @@ function ScannerSheet({
               : "\u5F53\u524D\u5DF2\u5173\u95ED\u81EA\u52A8\u751F\u56FE\u3002\u9875\u9762\u4F1A\u5148\u51FA\u6587\u5B57\u548C\u4EF7\u683C\uFF0C\u6CA1\u6709\u56FE\u7684\u83DC\u76F4\u63A5\u663E\u793A\u201C\u65E0\u56FE\u201D\uFF0C\u4E0D\u4F1A\u540E\u53F0\u81EA\u52A8\u6263\u8D39\u3002"}
           </div>
 
+          <div className="rounded-2xl border border-dashed border-[#d8b890] bg-white px-4 py-3 text-xs leading-6 text-[#8c6d53]">
+            {"\u76F8\u540C\u83DC\u5355\u56FE\u7247\u4F1A\u4F18\u5148\u8BFB\u53D6\u672C\u5730\u8BC6\u522B\u7F13\u5B58\uFF0C\u76F8\u540C\u83DC\u54C1\u4F1A\u4F18\u5148\u8BFB\u53D6\u5DF2\u751F\u6210\u7684\u83DC\u56FE\u7F13\u5B58\uFF0C\u51CF\u5C11\u91CD\u590D\u6263\u8D39\u3002"}
+          </div>
+
           {errorMessage ? (
             <div className="rounded-2xl bg-[#c34534]/10 px-4 py-3 text-sm text-[#9a1f1f]">
               {errorMessage}
@@ -1343,6 +1364,14 @@ function ScannerSheet({
               {"\u53EA\u6E05\u7A7A\u5F53\u524D\u83DC\u5355"}
             </button>
           ) : null}
+
+          <button
+            onClick={onClearLocalCaches}
+            className="flex w-full items-center justify-center gap-2 rounded-2xl border border-[#e2c5a0] bg-[#fff8ef] px-4 py-3 text-sm font-bold text-[#8a4b12]"
+          >
+            <Trash2 size={16} />
+            {"\u6E05\u7A7A\u672C\u5730\u7F13\u5B58\uFF08\u8BC6\u522B\u8BB0\u5F55 + \u83DC\u56FE\u7F13\u5B58\uFF09"}
+          </button>
         </div>
       </motion.div>
     </>

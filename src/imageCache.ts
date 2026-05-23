@@ -61,3 +61,16 @@ export async function setCachedDishImageBlob(cacheKey: string, blob: Blob): Prom
       reject(transaction.error || new Error("IndexedDB write failed"));
   });
 }
+
+export async function clearCachedDishImages(): Promise<void> {
+  const db = await openDb();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).clear();
+
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () =>
+      reject(transaction.error || new Error("IndexedDB clear failed"));
+  });
+}

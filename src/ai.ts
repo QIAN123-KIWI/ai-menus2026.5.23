@@ -32,6 +32,7 @@ const VISION_MODEL_FALLBACKS = [
   "Qwen/Qwen3-VL-30B-A3B-Instruct",
 ];
 const IMAGE_MODEL_FALLBACKS = [DEFAULT_IMAGE_MODEL, "Qwen/Qwen-Image"];
+const CATEGORY_LABEL = "菜单识别结果";
 
 const CATEGORY_COLORS = [
   "#D8C3A5",
@@ -116,6 +117,56 @@ function normalizeLoose(input?: string) {
   return input?.replace(/[\s\u3000\u30fb.,_\-()]+/g, "").toLowerCase() || "";
 }
 
+function translateCategoryToChineseSafe(input?: string) {
+  const cleaned = normalizeCategory(input);
+  const normalized = cleaned.toLowerCase();
+
+  if (/^[\u4e00-\u9fff\s]+$/.test(cleaned)) return cleaned;
+  if (/(本日|今日|おすすめ|オススメ|recommend|chef|special)/i.test(cleaned)) {
+    return "今日推荐";
+  }
+  if (/(前菜|一品|appetizer|starter|small plate)/i.test(cleaned)) {
+    return "前菜";
+  }
+  if (/(サラダ|沙拉|salad)/i.test(cleaned)) {
+    return "沙拉";
+  }
+  if (/(スープ|汤|湯|soup)/i.test(cleaned)) {
+    return "汤品";
+  }
+  if (/(主食|麺|面|飯|ご飯|ライス|noodle|rice|pasta|meal)/i.test(cleaned)) {
+    return "主食";
+  }
+  if (/(焼|烧|烤|焼き物|grill|bbq)/i.test(cleaned)) {
+    return "烧烤";
+  }
+  if (/(甜品|デザート|dessert|sweet)/i.test(cleaned)) {
+    return "甜品";
+  }
+  if (/(饮品|飲品|ドリンク|drink|beverage|beer|wine|cocktail)/i.test(cleaned)) {
+    return "饮品";
+  }
+
+  return /[a-z]/i.test(normalized) || /[\u3040-\u30ff\uac00-\ud7af]/.test(cleaned)
+    ? "菜单分类"
+    : cleaned;
+}
+
+function guessCurrencySafe(input?: string) {
+  const value = String(input || "");
+  if (/[¥￥円]/.test(value)) return "JPY";
+  if (/\$|USD/i.test(value)) return "USD";
+  if (/[€]|EUR/i.test(value)) return "EUR";
+  if (/[₩]|KRW/i.test(value)) return "KRW";
+  if (/[฿]|THB/i.test(value)) return "THB";
+  if (/[₫]|VND/i.test(value)) return "VND";
+  return "JPY";
+}
+
+function isLikelyMenuHeadingSafe(input: string) {
+  return /^(本日|今日|おすすめ|オススメ|推荐|菜单|menu)/i.test(input.trim());
+}
+
 function normalizeCachePart(input?: string) {
   return (input || "")
     .normalize("NFKC")
@@ -169,6 +220,19 @@ function writeCachedScanResult(cacheKey: string, items: MenuItem[]) {
     localStorage.setItem(cacheKey, JSON.stringify(items));
   } catch {
     // Ignore local cache quota errors and continue with live results.
+  }
+}
+
+export function clearScanResultCache() {
+  try {
+    const keysToRemove: string[] = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(SCAN_CACHE_PREFIX)) keysToRemove.push(key);
+    }
+    keysToRemove.forEach((key) => localStorage.removeItem(key));
+  } catch {
+    // Ignore cache cleanup failures.
   }
 }
 
@@ -380,9 +444,9 @@ function parseOcrTable(content: string): RawRecognizedMenuItem[] {
       return {
         original,
         price,
-        currency: guessCurrency(priceColumn),
+        currency: guessCurrencySafe(priceColumn),
         pronunciation: "",
-        category: currentCategory || "\u83DC\u5355\u8BC6\u522B\u7ED3\u679C",
+        category: currentCategory || CATEGORY_LABEL,
         lang_code: inferLangCode(original),
         note: "",
       };
@@ -413,9 +477,9 @@ function parseMarkdownTable(content: string): RawRecognizedMenuItem[] {
       return {
         original,
         price: parsePrice(priceColumn),
-        currency: guessCurrency(priceColumn),
+        currency: guessCurrencySafe(priceColumn),
         pronunciation: "",
-        category: "\u83DC\u5355\u8BC6\u522B\u7ED3\u679C",
+        category: CATEGORY_LABEL,
         lang_code: inferLangCode(original),
         note: "",
       };
@@ -443,9 +507,9 @@ function parseOcrLines(content: string): RawRecognizedMenuItem[] {
       return {
         original,
         price,
-        currency: guessCurrency(line),
+        currency: guessCurrencySafe(line),
         pronunciation: "",
-        category: currentCategory || "\u83DC\u5355\u8BC6\u522B\u7ED3\u679C",
+        category: currentCategory || CATEGORY_LABEL,
         lang_code: inferLangCode(original),
         note: "",
       };
@@ -461,7 +525,7 @@ function compactOcrItems(items: RawRecognizedMenuItem[]) {
     const original = cleanOcrCell(item.original || "");
     const price = parsePrice(item.price);
     if (!original || looksLikeHeader([original]) || /^[0-9,.]+$/.test(original)) continue;
-    if (isLikelyMenuHeading(original)) continue;
+    if (isLikelyMenuHeadingSafe(original)) continue;
 
     const key = `${normalizeLoose(original)}:${price || 0}`;
     if (!key || seen.has(key)) continue;
@@ -470,8 +534,8 @@ function compactOcrItems(items: RawRecognizedMenuItem[]) {
       ...item,
       original,
       price,
-      currency: item.currency || guessCurrency(String(item.price || "")),
-      category: item.category || "\u83DC\u5355\u8BC6\u522B\u7ED3\u679C",
+      currency: item.currency || guessCurrencySafe(String(item.price || "")),
+      category: item.category || CATEGORY_LABEL,
       lang_code: item.lang_code || inferLangCode(original),
     });
 
@@ -802,7 +866,7 @@ export function mapRecognizedItems(items: RecognizedMenuItem[]): MenuItem[] {
     .filter((item) => item.original || item.translation)
     .map((item, index) => {
       const originalCategory = normalizeCategory(item.category);
-      const category = translateCategoryToChinese(item.category);
+      const category = translateCategoryToChineseSafe(item.category);
       const sourceText = (
         item.original ||
         item.translation ||
@@ -896,7 +960,7 @@ function rawItemsToRecognizedItems(items: RawRecognizedMenuItem[]): RecognizedMe
     price: item.price,
     currency: item.currency,
     desc: item.desc || item.note || "",
-    category: item.category || "\u83DC\u5355\u8BC6\u522B\u7ED3\u679C",
+    category: item.category || CATEGORY_LABEL,
     lang_code: item.lang_code || inferLangCode(item.original),
   }));
 }
@@ -910,7 +974,7 @@ function hasModelReadyTranslation(item: RawRecognizedMenuItem) {
 
 function hasUsefulCategory(item: RawRecognizedMenuItem) {
   const category = normalizeLoose(item.category);
-  return Boolean(category && category !== normalizeLoose("菜单识别结果"));
+  return Boolean(category && category !== normalizeLoose(CATEGORY_LABEL));
 }
 
 function canSkipNormalizer(items: RawRecognizedMenuItem[]) {
