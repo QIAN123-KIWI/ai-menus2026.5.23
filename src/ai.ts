@@ -75,6 +75,41 @@ function normalizeCategory(input?: string) {
   return cleaned;
 }
 
+function translateCategoryToChinese(input?: string) {
+  const cleaned = normalizeCategory(input);
+  const normalized = cleaned.toLowerCase();
+
+  if (/^[\u4e00-\u9fff\s]+$/.test(cleaned)) return cleaned;
+  if (/本日|今日|おすすめ|オススメ|recommend|chef|special/.test(cleaned)) {
+    return "\u4ECA\u65E5\u63A8\u8350";
+  }
+  if (/(前菜|一品|appetizer|starter|small plate)/i.test(cleaned)) {
+    return "\u524D\u83DC";
+  }
+  if (/(沙拉|サラダ|salad)/i.test(cleaned)) {
+    return "\u6C99\u62C9";
+  }
+  if (/(汤|スープ|soup)/i.test(cleaned)) {
+    return "\u6C64\u54C1";
+  }
+  if (/(主食|麺|面|饭|ご飯|ライス|noodle|rice|pasta|meal)/i.test(cleaned)) {
+    return "\u4E3B\u98DF";
+  }
+  if (/(烧烤|烤物|焼|grill|bbq)/i.test(cleaned)) {
+    return "\u70E7\u70E4";
+  }
+  if (/(甜品|デザート|dessert|sweet)/i.test(cleaned)) {
+    return "\u751C\u54C1";
+  }
+  if (/(饮品|ドリンク|drink|beverage|beer|wine|cocktail)/i.test(cleaned)) {
+    return "\u996E\u54C1";
+  }
+
+  return /[a-z]/i.test(normalized) || /[\u3040-\u30ff\uac00-\ud7af]/.test(cleaned)
+    ? "\u83DC\u5355\u5206\u7C7B"
+    : cleaned;
+}
+
 function normalizeLoose(input?: string) {
   return input?.replace(/[\s\u3000\u30fb.,_\-()]+/g, "").toLowerCase() || "";
 }
@@ -669,6 +704,7 @@ export function getDefaultSettings(): Settings {
     model: DEFAULT_MODEL,
     visionModel: DEFAULT_VISION_MODEL,
     imageModel: DEFAULT_IMAGE_MODEL,
+    enableImageGeneration: false,
   };
 }
 
@@ -716,7 +752,8 @@ export function mapRecognizedItems(items: RecognizedMenuItem[]): MenuItem[] {
   return items
     .filter((item) => item.original || item.translation)
     .map((item, index) => {
-      const category = normalizeCategory(item.category);
+      const originalCategory = normalizeCategory(item.category);
+      const category = translateCategoryToChinese(item.category);
       const sourceText = (
         item.original ||
         item.translation ||
@@ -739,6 +776,7 @@ export function mapRecognizedItems(items: RecognizedMenuItem[]): MenuItem[] {
         tab: category,
         sourceText,
         chineseName,
+        originalCategory,
         phonetic,
         transliteration,
         price: priceValue,

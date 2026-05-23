@@ -136,6 +136,7 @@ export const SAMPLE_MENU: MenuItem[] = rows.map((row, index) => ({
   tab: TAB,
   sourceText: row.jp,
   chineseName: row.cn,
+  originalCategory: "\u672C\u65E5\u306E\u30AA\u30B9\u30B9\u30E1",
   phonetic: row.kana,
   transliteration: row.romaji,
   price: row.price,

@@ -28,9 +28,9 @@ import { SAMPLE_MENU } from "./sampleMenu";
 import type { AppPage, MenuItem, ScanStatus, Settings } from "./types";
 
 const STORAGE_KEYS = {
-  cart: "aimenu-v3-cart",
-  menu: "aimenu-v3-menu",
-  settings: "aimenu-v3-settings",
+  cart: "aimenu-v4-cart",
+  menu: "aimenu-v4-menu",
+  settings: "aimenu-v4-settings",
 };
 
 const STALE_TEXT_MODELS = [
@@ -116,12 +116,14 @@ function FoodImage({
   type,
   photoUrl,
   color,
+  imageGenerationEnabled,
   large = false,
 }: {
   title: string;
   type: MenuItem["img"];
   photoUrl?: string;
   color: string;
+  imageGenerationEnabled: boolean;
   large?: boolean;
 }) {
   const [failed, setFailed] = useState(false);
@@ -158,7 +160,7 @@ function FoodImage({
         <ImageOff size={20} />
       </div>
       <div className="text-xs font-bold tracking-[0.08em] text-[#8a6441]">
-        {"\u751F\u6210\u4E2D"}
+        {imageGenerationEnabled ? "\u5F85\u751F\u6210" : "\u65E0\u56FE"}
       </div>
     </div>
   );
@@ -167,9 +169,17 @@ function FoodImage({
 function DishText({
   item,
   compact = false,
+  primaryLanguage = "chinese",
+  showOriginal = true,
+  showMeta = true,
+  showDesc = true,
 }: {
   item: MenuItem;
   compact?: boolean;
+  primaryLanguage?: "chinese" | "source";
+  showOriginal?: boolean;
+  showMeta?: boolean;
+  showDesc?: boolean;
 }) {
   const titleClass = compact
     ? "text-lg font-black leading-tight text-[#2f1b10]"
@@ -177,6 +187,8 @@ function DishText({
   const sourceClass = compact
     ? "mt-1 text-sm font-semibold text-[#7a5a42]"
     : "mt-1 text-[15px] font-semibold text-[#7a5a42]";
+  const title = primaryLanguage === "source" ? item.sourceText : item.chineseName;
+  const secondary = primaryLanguage === "source" ? item.chineseName : item.sourceText;
 
   const metaLines = [
     item.phonetic &&
@@ -191,17 +203,21 @@ function DishText({
 
   return (
     <div className="min-w-0 flex-1">
-      <div className={`${titleClass} whitespace-normal break-words`}>{item.chineseName}</div>
-      <div className={`${sourceClass} whitespace-normal break-words`}>{item.sourceText}</div>
-      {metaLines.map((line) => (
+      <div className={`${titleClass} whitespace-normal break-words`}>{title}</div>
+      {showOriginal ? (
+        <div className={`${sourceClass} whitespace-normal break-words`}>{secondary}</div>
+      ) : null}
+      {showMeta
+        ? metaLines.map((line) => (
         <div
           key={line}
           className="whitespace-normal break-words text-xs tracking-[0.02em] text-[#9b775c]"
         >
           {line}
         </div>
-      ))}
-      {item.desc ? (
+          ))
+        : null}
+      {showDesc && item.desc ? (
         <div className="mt-1 whitespace-normal break-words text-xs font-medium text-[#b26f32]">
           {item.desc}
         </div>
@@ -338,6 +354,7 @@ export default function App() {
   }, [baseMenu]);
 
   useEffect(() => {
+    if (!settings.enableImageGeneration) return;
     if (!settings.apiKey.trim()) return;
     if (scanStatus === "processing") return;
 
@@ -563,6 +580,7 @@ export default function App() {
                   totalCurrency={totalCurrency}
                   totalCount={totalCount}
                   recognizedMenuCount={recognizedMenu.length}
+                  imageGenerationEnabled={settings.enableImageGeneration}
                   setPage={setPage}
                   onOpenScanner={() => setScannerOpen(true)}
                   onPickImages={() => inputRef.current?.click()}
@@ -580,6 +598,7 @@ export default function App() {
                   clearCart={clearCart}
                   total={total}
                   totalCurrency={totalCurrency}
+                  imageGenerationEnabled={settings.enableImageGeneration}
                   setPage={setPage}
                 />
               )}
@@ -591,6 +610,7 @@ export default function App() {
                   selected={selected}
                   total={total}
                   totalCurrency={totalCurrency}
+                  imageGenerationEnabled={settings.enableImageGeneration}
                   setPage={setPage}
                 />
               )}
@@ -642,6 +662,7 @@ function MenuPage({
   totalCurrency,
   totalCount,
   recognizedMenuCount,
+  imageGenerationEnabled,
   setPage,
   onOpenScanner,
   onPickImages,
@@ -658,6 +679,7 @@ function MenuPage({
   totalCurrency: string;
   totalCount: number;
   recognizedMenuCount: number;
+  imageGenerationEnabled: boolean;
   setPage: (page: AppPage) => void;
   onOpenScanner: () => void;
   onPickImages: () => void;
@@ -721,14 +743,15 @@ function MenuPage({
               key={item.id}
               className="flex items-center gap-3 border-b border-[#ead7bf] py-3"
             >
-              <FoodImage
-                title={item.chineseName}
-                type={item.img}
-                photoUrl={item.photoUrl}
-                color={item.color}
-              />
+                <FoodImage
+                  title={item.chineseName}
+                  type={item.img}
+                  photoUrl={item.photoUrl}
+                  color={item.color}
+                  imageGenerationEnabled={imageGenerationEnabled}
+                />
 
-              <DishText item={item} />
+                <DishText item={item} />
 
               <div className="flex flex-col items-end gap-2">
                 <div className="text-lg font-bold">{formatMoney(item.price, item.currency)}</div>
@@ -793,6 +816,7 @@ function CartPage({
   clearCart,
   total,
   totalCurrency,
+  imageGenerationEnabled,
   setPage,
 }: {
   cart: Record<string, number>;
@@ -802,6 +826,7 @@ function CartPage({
   clearCart: () => void;
   total: number;
   totalCurrency: string;
+  imageGenerationEnabled: boolean;
   setPage: (page: AppPage) => void;
 }) {
   return (
@@ -841,6 +866,7 @@ function CartPage({
                   type={item.img}
                   photoUrl={item.photoUrl}
                   color={item.color}
+                  imageGenerationEnabled={imageGenerationEnabled}
                   large
                 />
                 <div className="min-w-0 flex-1">
@@ -905,16 +931,18 @@ function WaiterPage({
   selected,
   total,
   totalCurrency,
+  imageGenerationEnabled,
   setPage,
 }: {
   cart: Record<string, number>;
   selected: MenuItem[];
   total: number;
   totalCurrency: string;
+  imageGenerationEnabled: boolean;
   setPage: (page: AppPage) => void;
 }) {
   const sentence = "\u8FD9\u4E9B\u83DC\u8BF7\u5E2E\u6211\u4E0B\u5355";
-  const sentenceSub = "\u4E0B\u65B9\u4FDD\u7559\u539F\u6587\uFF0C\u65B9\u4FBF\u5E97\u5458\u6838\u5BF9";
+  const sentenceSub = "\u670D\u52A1\u5458\u9875\u9762\u9ED8\u8BA4\u76F4\u63A5\u663E\u793A\u83DC\u5355\u539F\u6587";
 
   return (
     <Page>
@@ -954,8 +982,16 @@ function WaiterPage({
                   type={item.img}
                   photoUrl={item.photoUrl}
                   color={item.color}
+                  imageGenerationEnabled={imageGenerationEnabled}
                 />
-                <DishText item={item} compact />
+                <DishText
+                  item={item}
+                  compact
+                  primaryLanguage="source"
+                  showOriginal={false}
+                  showMeta={false}
+                  showDesc={false}
+                />
                 <div className="text-3xl font-black">{"\u00D7"}{cart[item.id]}</div>
               </div>
             ))
@@ -1135,8 +1171,38 @@ function ScannerSheet({
             />
           </label>
 
+          <label className="flex items-center justify-between gap-4 rounded-2xl border border-[#dfc59f] bg-white px-4 py-3">
+            <div>
+              <div className="text-sm font-bold text-[#6f4a2d]">
+                {"\u81EA\u52A8\u751F\u6210\u83DC\u56FE"}
+              </div>
+              <div className="text-xs text-[#8c6d53]">
+                {"\u9ED8\u8BA4\u5173\u95ED\uFF0C\u907F\u514D\u9875\u9762\u6253\u5F00\u540E\u540E\u53F0\u81EA\u52A8\u6D88\u8017 API \u989D\u5EA6"}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                onSettingsChange({
+                  enableImageGeneration: !settings.enableImageGeneration,
+                })
+              }
+              className={`relative h-8 w-14 rounded-full transition ${
+                settings.enableImageGeneration ? "bg-[#8a4b12]" : "bg-[#d9c3aa]"
+              }`}
+            >
+              <span
+                className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition ${
+                  settings.enableImageGeneration ? "left-7" : "left-1"
+                }`}
+              />
+            </button>
+          </label>
+
           <div className="rounded-2xl border border-dashed border-[#d8b890] bg-[#fff4e3] p-4 text-sm text-[#7b5434]">
-            {"\u9875\u9762\u4F1A\u5148\u79D2\u5F00\u3002\u6CA1\u56FE\u7684\u83DC\u5148\u663E\u793A\u201C\u65E0\u56FE\u201D\uFF0C\u7136\u540E\u540E\u53F0\u7528 OCR \u8BC6\u522B\u51FA\u6765\u7684\u83DC\u540D\u81EA\u52A8\u751F\u6210\u793A\u610F\u56FE\u5E76\u7F13\u5B58\u5230\u672C\u5730\u3002\u4E0B\u6B21\u540C\u4E00\u9053\u83DC\u76F4\u63A5\u8BFB\u7F13\u5B58\uFF0C\u4E0D\u4F1A\u91CD\u590D\u73B0\u751F\u3002"}
+            {settings.enableImageGeneration
+              ? "\u5F53\u524D\u5DF2\u5F00\u542F\u83DC\u56FE\u751F\u6210\u3002\u65E0\u56FE\u83DC\u54C1\u4F1A\u5148\u663E\u793A\u5360\u4F4D\uFF0C\u540E\u53F0\u518D\u6309\u83DC\u540D\u751F\u6210\u793A\u610F\u56FE\u3002"
+              : "\u5F53\u524D\u5DF2\u5173\u95ED\u81EA\u52A8\u751F\u56FE\u3002\u9875\u9762\u4F1A\u5148\u51FA\u6587\u5B57\u548C\u4EF7\u683C\uFF0C\u6CA1\u6709\u56FE\u7684\u83DC\u76F4\u63A5\u663E\u793A\u201C\u65E0\u56FE\u201D\uFF0C\u4E0D\u4F1A\u540E\u53F0\u81EA\u52A8\u6263\u8D39\u3002"}
           </div>
 
           {errorMessage ? (

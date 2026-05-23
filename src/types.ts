@@ -16,6 +16,7 @@ export type MenuItem = {
   tab: string;
   sourceText: string;
   chineseName: string;
+  originalCategory?: string;
   phonetic?: string;
   transliteration?: string;
   price: number;
@@ -58,4 +59,5 @@ export type Settings = {
   model: string;
   visionModel: string;
   imageModel: string;
+  enableImageGeneration: boolean;
 };
