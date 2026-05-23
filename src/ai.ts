@@ -10,6 +10,7 @@ const API_URL = "https://api.siliconflow.cn/v1/chat/completions";
 const IMAGE_API_URL = "https://api.siliconflow.cn/v1/images/generations";
 const OCR_CONCURRENCY = 3;
 const NORMALIZE_TIMEOUT_MS = 12000;
+const OCR_FAST_PASS_MIN_ITEMS = 5;
 const SCAN_CACHE_PREFIX = "aimenu-v5-scan-cache";
 const SCAN_CACHE_VERSION = "v2";
 const DEFAULT_MODEL =
@@ -567,7 +568,7 @@ async function fileToDataUrl(file: File) {
   });
 }
 
-async function splitImage(file: File) {
+async function splitImage(file: File, mode: "single" | "slices" = "slices") {
   const dataUrl = await fileToDataUrl(file);
 
   return new Promise<string[]>((resolve, reject) => {
@@ -588,11 +589,25 @@ async function splitImage(file: File) {
 
       canvas.width = width;
 
-      if (image.height > image.width * 1.5) {
+      if (mode === "single") {
+        canvas.height = height;
+        context.clearRect(0, 0, width, height);
+        context.drawImage(
+          image,
+          0,
+          0,
+          image.width,
+          image.height,
+          0,
+          0,
+          width,
+          height,
+        );
+        slices.push(canvas.toDataURL("image/jpeg", 0.58));
+      } else if (image.height > image.width * 1.8) {
         [
-          { start: 0, end: 0.5 },
-          { start: 0.4, end: 0.9 },
-          { start: 0.7, end: 1 },
+          { start: 0, end: 0.62 },
+          { start: 0.45, end: 1 },
         ].forEach((range) => {
           const sourceY = image.height * range.start;
           const sourceHeight = image.height * (range.end - range.start);
@@ -610,23 +625,8 @@ async function splitImage(file: File) {
             width,
             targetHeight,
           );
-          slices.push(canvas.toDataURL("image/jpeg", 0.6));
+          slices.push(canvas.toDataURL("image/jpeg", 0.58));
         });
-      } else {
-        canvas.height = height;
-        context.clearRect(0, 0, width, height);
-        context.drawImage(
-          image,
-          0,
-          0,
-          image.width,
-          image.height,
-          0,
-          0,
-          width,
-          height,
-        );
-        slices.push(canvas.toDataURL("image/jpeg", 0.6));
       }
 
       resolve(slices);
@@ -984,8 +984,8 @@ function canSkipNormalizer(items: RawRecognizedMenuItem[]) {
   const categorizedCount = items.filter(hasUsefulCategory).length;
 
   return (
-    translatedCount >= Math.max(1, Math.ceil(items.length * 0.6)) &&
-    categorizedCount >= Math.max(1, Math.ceil(items.length * 0.45))
+    translatedCount >= Math.max(1, Math.ceil(items.length * 0.4)) &&
+    categorizedCount >= Math.max(1, Math.ceil(items.length * 0.25))
   );
 }
 
@@ -1007,7 +1007,6 @@ export async function recognizeMenuFiles(
 
   const seen = new Set<string>();
   const rawCollected: RawRecognizedMenuItem[] = [];
-  const imageParts = (await Promise.all(files.map((file) => splitImage(file)))).flat();
 
   function collectItems(items: RawRecognizedMenuItem[]) {
     for (const item of items) {
@@ -1023,11 +1022,29 @@ export async function recognizeMenuFiles(
     }
   }
 
+  const fastPassParts = (await Promise.all(
+    files.map((file) => splitImage(file, "single")),
+  )).flat();
+
   await runPool(
-    imageParts.map((part) => () => requestVisionRecognition(part, settings)),
+    fastPassParts.map((part) => () => requestVisionRecognition(part, settings)),
     OCR_CONCURRENCY,
     collectItems,
   );
+
+  if (rawCollected.length < Math.max(OCR_FAST_PASS_MIN_ITEMS, files.length * 4)) {
+    const fallbackParts = (await Promise.all(
+      files.map((file) => splitImage(file, "slices")),
+    )).flat();
+
+    if (fallbackParts.length > 0) {
+      await runPool(
+        fallbackParts.map((part) => () => requestVisionRecognition(part, settings)),
+        OCR_CONCURRENCY,
+        collectItems,
+      );
+    }
+  }
 
   if (rawCollected.length === 0) {
     return [];

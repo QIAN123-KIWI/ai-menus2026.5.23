@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen,
+  Camera,
   ChevronLeft,
   Cog,
   ImageOff,
@@ -260,7 +261,8 @@ function Page({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const galleryInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const photoUrlsRef = useRef<Record<string, string>>({});
   const generatedPhotosRef = useRef<Record<string, string>>({});
   const failedImageKeysRef = useRef(new Set<string>());
@@ -525,6 +527,20 @@ export default function App() {
     setToast("\u5DF2\u6E05\u7A7A\u5F53\u524D\u83DC\u5355\uFF0C\u8BF7\u91CD\u65B0\u5BFC\u5165");
   }
 
+  function ensureApiKeyBeforeImport() {
+    if (settings.apiKey.trim()) return true;
+    setErrorMessage("\u8BF7\u5148\u586B\u5199 SiliconFlow API Key \u518D\u5F00\u59CB\u8BC6\u522B");
+    setScannerOpen(true);
+    setToast("\u8BF7\u5148\u586B\u5199 API Key");
+    return false;
+  }
+
+  function openImportPicker(mode: "gallery" | "camera" = "gallery") {
+    if (!ensureApiKeyBeforeImport()) return;
+    const target = mode === "camera" ? cameraInputRef.current : galleryInputRef.current;
+    window.setTimeout(() => target?.click(), 0);
+  }
+
   async function clearLocalCaches() {
     clearRecognizedMenu();
     clearScanResultCache();
@@ -535,17 +551,24 @@ export default function App() {
   function resetAndReimport() {
     clearRecognizedMenu();
     setScannerOpen(true);
-    window.setTimeout(() => inputRef.current?.click(), 0);
+    openImportPicker("gallery");
   }
 
   function clearAndPickImages() {
     clearRecognizedMenu();
-    window.setTimeout(() => inputRef.current?.click(), 0);
+    openImportPicker("gallery");
   }
 
   async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files || []);
     if (files.length === 0) return;
+
+    if (!settings.apiKey.trim()) {
+      setErrorMessage("\u8BF7\u5148\u586B\u5199 SiliconFlow API Key \u518D\u5F00\u59CB\u8BC6\u522B");
+      setScannerOpen(true);
+      event.target.value = "";
+      return;
+    }
 
     setErrorMessage("");
     setScanStatus("processing");
@@ -564,14 +587,18 @@ export default function App() {
       setScannerOpen(false);
     } catch (error) {
       setScanStatus("error");
+      setScannerOpen(true);
       setErrorMessage(
         error instanceof Error
           ? error.message
           : "\u8BC6\u522B\u5931\u8D25\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5",
       );
     } finally {
-      if (inputRef.current) {
-        inputRef.current.value = "";
+      if (galleryInputRef.current) {
+        galleryInputRef.current.value = "";
+      }
+      if (cameraInputRef.current) {
+        cameraInputRef.current.value = "";
       }
       window.setTimeout(() => {
         setScanStatus((prev) => (prev === "finished" ? "idle" : prev));
@@ -582,10 +609,18 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#f2e3cc] px-3 py-4 text-[#321b0d]">
       <input
-        ref={inputRef}
+        ref={galleryInputRef}
         type="file"
         accept="image/*"
         multiple
+        className="hidden"
+        onChange={handleUpload}
+      />
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
         className="hidden"
         onChange={handleUpload}
       />
@@ -652,7 +687,8 @@ export default function App() {
                   generatingImageIds={generatingImageIds}
                   setPage={setPage}
                   onOpenScanner={() => setScannerOpen(true)}
-                  onPickImages={() => inputRef.current?.click()}
+                  onPickImages={() => openImportPicker("gallery")}
+                  onTakePhoto={() => openImportPicker("camera")}
                   onResetAndReimport={resetAndReimport}
                   onClearMenu={clearRecognizedMenu}
                   onGenerateImage={(item) => {
@@ -703,7 +739,8 @@ export default function App() {
                 errorMessage={errorMessage}
                 onClose={() => setScannerOpen(false)}
                 onSettingsChange={updateSettings}
-                onPickImages={() => inputRef.current?.click()}
+                onPickImages={() => openImportPicker("gallery")}
+                onTakePhoto={() => openImportPicker("camera")}
                 onClearRecognizedMenu={clearRecognizedMenu}
                 onClearAndPickImages={clearAndPickImages}
                 onClearLocalCaches={() => {
@@ -749,6 +786,7 @@ function MenuPage({
   setPage,
   onOpenScanner,
   onPickImages,
+  onTakePhoto,
   onResetAndReimport,
   onClearMenu,
   onGenerateImage,
@@ -770,6 +808,7 @@ function MenuPage({
   setPage: (page: AppPage) => void;
   onOpenScanner: () => void;
   onPickImages: () => void;
+  onTakePhoto: () => void;
   onResetAndReimport: () => void;
   onClearMenu: () => void;
   onGenerateImage: (item: MenuItem) => void;
@@ -792,6 +831,13 @@ function MenuPage({
             {recognizedMenuCount > 0
               ? `\u91CD\u65B0\u5BFC\u5165 ${recognizedMenuCount}`
               : "\u5BFC\u5165\u83DC\u5355\u56FE\u7247"}
+          </button>
+          <button
+            onClick={onTakePhoto}
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-[#e1ccb0] bg-white/70"
+            title="\u62CD\u7167\u8BC6\u522B"
+          >
+            <Camera size={18} />
           </button>
           <button
             onClick={onClearMenu}
@@ -838,15 +884,23 @@ function MenuPage({
       <div className="flex-1 overflow-y-auto px-5 pb-24">
         {list.length === 0 ? (
           <div className="flex h-full min-h-[360px] flex-col items-center justify-center text-center text-[#8c6d53]">
-            <div className="mb-3 text-lg font-bold">
-              {"\u5F53\u524D\u6CA1\u6709\u83DC\u5355"}
+              <div className="mb-3 text-lg font-bold">
+                {"\u5F53\u524D\u6CA1\u6709\u83DC\u5355"}
+              </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={onPickImages}
+                className="rounded-full bg-[#8a4b12] px-5 py-3 text-sm font-bold text-white"
+              >
+                {"\u4ECE\u56FE\u5E93\u5BFC\u5165"}
+              </button>
+              <button
+                onClick={onTakePhoto}
+                className="rounded-full border border-[#d9b98b] bg-white px-5 py-3 text-sm font-bold text-[#6a3b12]"
+              >
+                {"\u62CD\u7167\u8BC6\u522B"}
+              </button>
             </div>
-            <button
-              onClick={onPickImages}
-              className="rounded-full bg-[#8a4b12] px-5 py-3 text-sm font-bold text-white"
-            >
-              {"\u4E0A\u4F20\u65B0\u83DC\u5355"}
-            </button>
           </div>
         ) : list.map((item) => {
           const isOrderable = item.price > 0;
@@ -1189,6 +1243,7 @@ function ScannerSheet({
   onClose,
   onSettingsChange,
   onPickImages,
+  onTakePhoto,
   onClearRecognizedMenu,
   onClearAndPickImages,
   onClearLocalCaches,
@@ -1199,6 +1254,7 @@ function ScannerSheet({
   onClose: () => void;
   onSettingsChange: (patch: Partial<Settings>) => void;
   onPickImages: () => void;
+  onTakePhoto: () => void;
   onClearRecognizedMenu: () => void;
   onClearAndPickImages: () => void;
   onClearLocalCaches: () => void;
@@ -1330,15 +1386,22 @@ function ScannerSheet({
 
           <div className="grid grid-cols-2 gap-3">
             <button
-              onClick={onPickImages}
+              onClick={onTakePhoto}
               className="flex items-center justify-center gap-2 rounded-2xl bg-[#7d4513] px-4 py-4 font-bold text-white"
             >
-              <Upload size={18} />
-              {"\u4E0A\u4F20\u83DC\u5355\u56FE\u7247"}
+              <Camera size={18} />
+              {"\u62CD\u7167\u8BC6\u522B"}
             </button>
             <button
               onClick={onPickImages}
               className="flex items-center justify-center gap-2 rounded-2xl border border-[#d9b98b] bg-white px-4 py-4 font-bold text-[#6a3b12]"
+            >
+              <Upload size={18} />
+              {"\u4ECE\u56FE\u5E93\u5BFC\u5165"}
+            </button>
+            <button
+              onClick={onPickImages}
+              className="col-span-2 flex items-center justify-center gap-2 rounded-2xl border border-[#d9b98b] bg-white px-4 py-4 font-bold text-[#6a3b12]"
             >
               <ImagePlus size={18} />
               {"\u7EE7\u7EED\u8BC6\u522B"}
