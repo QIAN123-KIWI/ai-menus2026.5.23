@@ -17,7 +17,7 @@ const DEFAULT_MODEL =
   import.meta.env.VITE_SILICONFLOW_MODEL || "moonshotai/Kimi-K2-Instruct-0905";
 const DEFAULT_VISION_MODEL =
   import.meta.env.VITE_SILICONFLOW_VISION_MODEL ||
-  "Qwen/Qwen3-VL-32B-Instruct";
+  "Qwen/Qwen3-VL-8B-Instruct";
 const DEFAULT_IMAGE_MODEL =
   import.meta.env.VITE_SILICONFLOW_IMAGE_MODEL ||
   "Qwen/Qwen-Image";
@@ -29,6 +29,7 @@ const TEXT_MODEL_FALLBACKS = [
 ];
 const VISION_MODEL_FALLBACKS = [
   DEFAULT_VISION_MODEL,
+  "Qwen/Qwen3-VL-32B-Instruct",
   "deepseek-ai/DeepSeek-OCR",
   "Qwen/Qwen3-VL-30B-A3B-Instruct",
 ];
@@ -993,6 +994,7 @@ export async function recognizeMenuFiles(
   files: File[],
   settings: Settings,
   onProgress?: (count: number) => void,
+  onPartialItems?: (items: MenuItem[]) => void,
 ) {
   if (!settings.apiKey.trim()) {
     throw new Error("\u8BF7\u5148\u586B\u5199 SiliconFlow API Key");
@@ -1007,8 +1009,10 @@ export async function recognizeMenuFiles(
 
   const seen = new Set<string>();
   const rawCollected: RawRecognizedMenuItem[] = [];
+  let lastPartialEmit = 0;
 
   function collectItems(items: RawRecognizedMenuItem[]) {
+    let addedCount = 0;
     for (const item of items) {
         const priceValue =
           typeof item.price === "number"
@@ -1018,7 +1022,16 @@ export async function recognizeMenuFiles(
         if (!dedupeKey || seen.has(dedupeKey)) continue;
         seen.add(dedupeKey);
         rawCollected.push(item);
+        addedCount += 1;
         onProgress?.(rawCollected.length);
+    }
+
+    if (addedCount <= 0 || !onPartialItems) return;
+
+    const now = Date.now();
+    if (rawCollected.length > 0 && (rawCollected.length <= 6 || now - lastPartialEmit >= 500)) {
+      lastPartialEmit = now;
+      onPartialItems(mapRecognizedItems(rawItemsToRecognizedItems([...rawCollected])));
     }
   }
 

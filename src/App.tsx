@@ -49,7 +49,7 @@ const STALE_VISION_MODELS = [
   "Pro/moonshotai/Kimi-K2.6",
   "Qwen/Qwen2.5-VL-7B-Instruct",
   "deepseek-ai/DeepSeek-OCR",
-  "Qwen/Qwen3-VL-8B-Instruct",
+  "Qwen/Qwen3-VL-32B-Instruct",
 ];
 const STALE_IMAGE_MODELS = ["black-forest-labs/FLUX.1-schnell", "Kwai-Kolors/Kolors"];
 const IMAGE_WORKER_COUNT = 2;
@@ -575,7 +575,17 @@ export default function App() {
     setRecognizedCount(0);
 
     try {
-      const items = await recognizeMenuFiles(files, settings, setRecognizedCount);
+      const items = await recognizeMenuFiles(
+        files,
+        settings,
+        setRecognizedCount,
+        (partialItems) => {
+          if (partialItems.length === 0) return;
+          setRecognizedMenu(partialItems);
+          setSampleMenuVisible(false);
+          setPage("menu");
+        },
+      );
       setRecognizedMenu(items);
       setSampleMenuVisible(false);
       setCart({});
