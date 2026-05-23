@@ -10,6 +10,8 @@ const API_URL = "https://api.siliconflow.cn/v1/chat/completions";
 const IMAGE_API_URL = "https://api.siliconflow.cn/v1/images/generations";
 const OCR_CONCURRENCY = 3;
 const NORMALIZE_TIMEOUT_MS = 12000;
+const SCAN_CACHE_PREFIX = "aimenu-v5-scan-cache";
+const SCAN_CACHE_VERSION = "v2";
 const DEFAULT_MODEL =
   import.meta.env.VITE_SILICONFLOW_MODEL || "moonshotai/Kimi-K2-Instruct-0905";
 const DEFAULT_VISION_MODEL =
@@ -121,6 +123,53 @@ function normalizeCachePart(input?: string) {
     .replace(/[\s\u3000]+/g, " ")
     .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+async function hashBuffer(buffer: BufferSource) {
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function getFileSignature(file: File) {
+  const contentHash = await hashBuffer(await file.arrayBuffer());
+  return [
+    normalizeCachePart(file.name),
+    file.size,
+    file.lastModified,
+    contentHash.slice(0, 24),
+  ].join("__");
+}
+
+async function getScanCacheKey(files: File[], settings: Settings) {
+  const fileSignatures = await Promise.all(files.map((file) => getFileSignature(file)));
+  const signature = [
+    SCAN_CACHE_VERSION,
+    settings.model,
+    settings.visionModel,
+    ...fileSignatures.sort(),
+  ].join("::");
+  return `${SCAN_CACHE_PREFIX}:${await hashBuffer(new TextEncoder().encode(signature))}`;
+}
+
+function readCachedScanResult(cacheKey: string): MenuItem[] | null {
+  try {
+    const raw = localStorage.getItem(cacheKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as MenuItem[];
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedScanResult(cacheKey: string, items: MenuItem[]) {
+  try {
+    localStorage.setItem(cacheKey, JSON.stringify(items));
+  } catch {
+    // Ignore local cache quota errors and continue with live results.
+  }
 }
 
 function inferLangCode(text: string) {
@@ -852,6 +901,30 @@ function rawItemsToRecognizedItems(items: RawRecognizedMenuItem[]): RecognizedMe
   }));
 }
 
+function hasModelReadyTranslation(item: RawRecognizedMenuItem) {
+  return Boolean(
+    item.translation &&
+      normalizeLoose(item.translation) !== normalizeLoose(item.original),
+  );
+}
+
+function hasUsefulCategory(item: RawRecognizedMenuItem) {
+  const category = normalizeLoose(item.category);
+  return Boolean(category && category !== normalizeLoose("菜单识别结果"));
+}
+
+function canSkipNormalizer(items: RawRecognizedMenuItem[]) {
+  if (items.length === 0) return true;
+
+  const translatedCount = items.filter(hasModelReadyTranslation).length;
+  const categorizedCount = items.filter(hasUsefulCategory).length;
+
+  return (
+    translatedCount >= Math.max(1, Math.ceil(items.length * 0.6)) &&
+    categorizedCount >= Math.max(1, Math.ceil(items.length * 0.45))
+  );
+}
+
 export async function recognizeMenuFiles(
   files: File[],
   settings: Settings,
@@ -859,6 +932,13 @@ export async function recognizeMenuFiles(
 ) {
   if (!settings.apiKey.trim()) {
     throw new Error("\u8BF7\u5148\u586B\u5199 SiliconFlow API Key");
+  }
+
+  const cacheKey = await getScanCacheKey(files, settings);
+  const cachedResult = readCachedScanResult(cacheKey);
+  if (cachedResult) {
+    onProgress?.(cachedResult.length);
+    return cachedResult;
   }
 
   const seen = new Set<string>();
@@ -889,14 +969,10 @@ export async function recognizeMenuFiles(
     return [];
   }
 
-  const translatedCount = rawCollected.filter(
-    (item) =>
-      item.translation &&
-      normalizeLoose(item.translation) !== normalizeLoose(item.original),
-  ).length;
-
-  if (translatedCount >= Math.max(1, Math.ceil(rawCollected.length * 0.6))) {
-    return mapRecognizedItems(rawItemsToRecognizedItems(rawCollected));
+  if (canSkipNormalizer(rawCollected)) {
+    const directItems = mapRecognizedItems(rawItemsToRecognizedItems(rawCollected));
+    writeCachedScanResult(cacheKey, directItems);
+    return directItems;
   }
 
   try {
@@ -908,8 +984,12 @@ export async function recognizeMenuFiles(
       "菜单整理超时，已先显示 OCR 识别结果",
     );
 
-    return mapRecognizedItems(normalizedChunks.flat());
+    const normalizedItems = mapRecognizedItems(normalizedChunks.flat());
+    writeCachedScanResult(cacheKey, normalizedItems);
+    return normalizedItems;
   } catch {
-    return mapRecognizedItems(rawItemsToRecognizedItems(rawCollected));
+    const fallbackItems = mapRecognizedItems(rawItemsToRecognizedItems(rawCollected));
+    writeCachedScanResult(cacheKey, fallbackItems);
+    return fallbackItems;
   }
 }

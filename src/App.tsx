@@ -172,7 +172,7 @@ function FoodImage({
       <div className="text-xs font-bold tracking-[0.08em] text-[#8a6441]">
         {isGenerating
           ? "\u751F\u6210\u4E2D"
-          : imageGenerationEnabled
+          : onClick
             ? "\u70B9\u51FB\u751F\u6210"
             : "\u65E0\u56FE"}
       </div>
