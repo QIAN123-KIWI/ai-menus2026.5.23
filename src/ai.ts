@@ -11,18 +11,18 @@ const IMAGE_API_URL = "https://api.siliconflow.cn/v1/images/generations";
 const OCR_CONCURRENCY = 3;
 const NORMALIZE_TIMEOUT_MS = 12000;
 const DEFAULT_MODEL =
-  import.meta.env.VITE_SILICONFLOW_MODEL || "Qwen/Qwen3-14B";
+  import.meta.env.VITE_SILICONFLOW_MODEL || "moonshotai/Kimi-K2-Instruct-0905";
 const DEFAULT_VISION_MODEL =
   import.meta.env.VITE_SILICONFLOW_VISION_MODEL ||
-  "Qwen/Qwen3-VL-8B-Instruct";
+  "Qwen/Qwen3-VL-32B-Instruct";
 const DEFAULT_IMAGE_MODEL =
   import.meta.env.VITE_SILICONFLOW_IMAGE_MODEL ||
-  "Kwai-Kolors/Kolors";
+  "Qwen/Qwen-Image";
 const DEFAULT_IMAGE_SIZE = "512x512";
 const TEXT_MODEL_FALLBACKS = [
   DEFAULT_MODEL,
-  "Qwen/Qwen2.5-7B-Instruct",
-  "deepseek-ai/DeepSeek-V3",
+  "moonshotai/Kimi-K2-Thinking",
+  "deepseek-ai/DeepSeek-V3.2",
 ];
 const VISION_MODEL_FALLBACKS = [
   DEFAULT_VISION_MODEL,

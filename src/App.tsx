@@ -17,32 +17,35 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  generateDishImageUrl,
+  generateDishImageBlob,
   getDefaultSettings,
   getDishImageCacheKey,
   recognizeMenuFiles,
   sortTabs,
 } from "./ai";
-import { getCachedDishImageBlob } from "./imageCache";
+import { getCachedDishImageBlob, setCachedDishImageBlob } from "./imageCache";
 import { SAMPLE_MENU } from "./sampleMenu";
 import type { AppPage, MenuItem, ScanStatus, Settings } from "./types";
 
 const STORAGE_KEYS = {
-  cart: "aimenu-v4-cart",
-  menu: "aimenu-v4-menu",
-  settings: "aimenu-v4-settings",
+  cart: "aimenu-v5-cart",
+  menu: "aimenu-v5-menu",
+  settings: "aimenu-v5-settings",
+  sampleVisible: "aimenu-v5-sample-visible",
 };
 
 const STALE_TEXT_MODELS = [
   "Pro/moonshotai/Kimi-K2.6",
   "Qwen/Qwen2.5-7B-Instruct",
+  "Qwen/Qwen3-14B",
 ];
 const STALE_VISION_MODELS = [
   "Pro/moonshotai/Kimi-K2.6",
   "Qwen/Qwen2.5-VL-7B-Instruct",
   "deepseek-ai/DeepSeek-OCR",
+  "Qwen/Qwen3-VL-8B-Instruct",
 ];
-const STALE_IMAGE_MODELS = ["black-forest-labs/FLUX.1-schnell"];
+const STALE_IMAGE_MODELS = ["black-forest-labs/FLUX.1-schnell", "Kwai-Kolors/Kolors"];
 const IMAGE_WORKER_COUNT = 2;
 const FALLBACK_TAB = "\u524D\u83DC";
 const YEN = "\u00A5";
@@ -113,17 +116,19 @@ function revokeObjectUrl(url?: string) {
 
 function FoodImage({
   title,
-  type,
   photoUrl,
   color,
   imageGenerationEnabled,
+  isGenerating = false,
+  onClick,
   large = false,
 }: {
   title: string;
-  type: MenuItem["img"];
   photoUrl?: string;
   color: string;
   imageGenerationEnabled: boolean;
+  isGenerating?: boolean;
+  onClick?: () => void;
   large?: boolean;
 }) {
   const [failed, setFailed] = useState(false);
@@ -150,19 +155,28 @@ function FoodImage({
   }
 
   return (
-    <div
-      className={`${size} flex shrink-0 flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed border-[#d9b98b] bg-[#fff3df] px-3 text-center shadow-sm`}
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!onClick || isGenerating}
+      className={`${size} flex shrink-0 flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed border-[#d9b98b] bg-[#fff3df] px-3 text-center shadow-sm transition ${
+        onClick ? "cursor-pointer hover:border-[#b67c43] hover:bg-[#fff0d7]" : "cursor-default"
+      } disabled:cursor-wait disabled:opacity-80`}
     >
       <div
         className="mb-2 flex h-11 w-11 items-center justify-center rounded-full"
         style={{ backgroundColor: `${color}22`, color }}
       >
-        <ImageOff size={20} />
+        {isGenerating ? <LoaderCircle className="animate-spin" size={20} /> : <ImageOff size={20} />}
       </div>
       <div className="text-xs font-bold tracking-[0.08em] text-[#8a6441]">
-        {imageGenerationEnabled ? "\u5F85\u751F\u6210" : "\u65E0\u56FE"}
+        {isGenerating
+          ? "\u751F\u6210\u4E2D"
+          : imageGenerationEnabled
+            ? "\u70B9\u51FB\u751F\u6210"
+            : "\u65E0\u56FE"}
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -250,6 +264,9 @@ export default function App() {
   const [recognizedMenu, setRecognizedMenu] = useState<MenuItem[]>(() =>
     readJson<MenuItem[]>(STORAGE_KEYS.menu, []),
   );
+  const [sampleMenuVisible, setSampleMenuVisible] = useState(() =>
+    readJson<boolean>(STORAGE_KEYS.sampleVisible, true),
+  );
   const [settings, setSettings] = useState<Settings>(() => getStoredSettings());
   const [scannerOpen, setScannerOpen] = useState(false);
   const [cart, setCart] = useState<Record<string, number>>(() =>
@@ -258,10 +275,13 @@ export default function App() {
   const [scanStatus, setScanStatus] = useState<ScanStatus>("idle");
   const [recognizedCount, setRecognizedCount] = useState(0);
   const [generatedPhotos, setGeneratedPhotos] = useState<Record<string, string>>({});
+  const [generatingImageIds, setGeneratingImageIds] = useState<Record<string, boolean>>({});
   const [toast, setToast] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
 
-  const baseMenu = recognizedMenu.length > 0 ? recognizedMenu : SAMPLE_MENU;
+  const isUsingSampleMenu = recognizedMenu.length === 0 && sampleMenuVisible;
+  const baseMenu =
+    recognizedMenu.length > 0 ? recognizedMenu : sampleMenuVisible ? SAMPLE_MENU : [];
   const menu = useMemo(
     () =>
       baseMenu.map((item) =>
@@ -288,6 +308,10 @@ export default function App() {
   }, [settings]);
 
   useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.sampleVisible, JSON.stringify(sampleMenuVisible));
+  }, [sampleMenuVisible]);
+
+  useEffect(() => {
     if (!tabs.includes(activeTab)) {
       setActiveTab(tabs[0] || FALLBACK_TAB);
     }
@@ -308,6 +332,49 @@ export default function App() {
   useEffect(() => {
     failedImageKeysRef.current.clear();
   }, [settings.imageModel]);
+
+  function attachImageBlob(itemId: string, blob: Blob) {
+    const objectUrl = URL.createObjectURL(blob);
+    const previous = photoUrlsRef.current[itemId];
+    revokeObjectUrl(previous);
+    photoUrlsRef.current[itemId] = objectUrl;
+    generatedPhotosRef.current[itemId] = objectUrl;
+    setGeneratedPhotos((prev) => ({ ...prev, [itemId]: objectUrl }));
+  }
+
+  async function ensureDishImage(item: MenuItem, forceGenerate = false) {
+    const cacheKey = getDishImageCacheKey(item);
+    if (activeImageJobsRef.current.has(cacheKey)) return;
+
+    activeImageJobsRef.current.add(cacheKey);
+    setGeneratingImageIds((prev) => ({ ...prev, [item.id]: true }));
+
+    try {
+      let blob = forceGenerate ? null : await getCachedDishImageBlob(cacheKey);
+
+      if (!blob) {
+        blob = await generateDishImageBlob(settings, item);
+        await setCachedDishImageBlob(cacheKey, blob);
+      }
+
+      attachImageBlob(item.id, blob);
+      failedImageKeysRef.current.delete(cacheKey);
+    } catch (error) {
+      failedImageKeysRef.current.add(cacheKey);
+      setToast(
+        error instanceof Error
+          ? error.message
+          : "\u8FD9\u9053\u83DC\u56FE\u751F\u6210\u5931\u8D25\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5",
+      );
+    } finally {
+      activeImageJobsRef.current.delete(cacheKey);
+      setGeneratingImageIds((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+    }
+  }
 
   useEffect(() => {
     const validIds = new Set(baseMenu.map((item) => item.id));
@@ -338,12 +405,7 @@ export default function App() {
           const blob = await getCachedDishImageBlob(getDishImageCacheKey(item));
           if (cancelled || !blob) continue;
 
-          const objectUrl = URL.createObjectURL(blob);
-          const previous = photoUrlsRef.current[item.id];
-          revokeObjectUrl(previous);
-        photoUrlsRef.current[item.id] = objectUrl;
-        generatedPhotosRef.current[item.id] = objectUrl;
-        setGeneratedPhotos((prev) => ({ ...prev, [item.id]: objectUrl }));
+          attachImageBlob(item.id, blob);
       }
     }
 
@@ -384,17 +446,7 @@ export default function App() {
         activeImageJobsRef.current.add(cacheKey);
 
         try {
-          const cachedBlob = await getCachedDishImageBlob(cacheKey);
-          if (cancelled) return;
-
-          const objectUrl = cachedBlob
-            ? URL.createObjectURL(cachedBlob)
-            : await generateDishImageUrl(settings, item);
-          const previous = photoUrlsRef.current[item.id];
-          revokeObjectUrl(previous);
-          photoUrlsRef.current[item.id] = objectUrl;
-          generatedPhotosRef.current[item.id] = objectUrl;
-          setGeneratedPhotos((prev) => ({ ...prev, [item.id]: objectUrl }));
+          await ensureDishImage(item);
         } catch {
           failedImageKeysRef.current.add(cacheKey);
         } finally {
@@ -456,8 +508,10 @@ export default function App() {
     generatedPhotosRef.current = {};
     failedImageKeysRef.current.clear();
     activeImageJobsRef.current.clear();
+    setGeneratingImageIds({});
     setGeneratedPhotos({});
     setRecognizedMenu([]);
+    setSampleMenuVisible(false);
     setCart({});
     setRecognizedCount(0);
     setScanStatus("idle");
@@ -488,6 +542,7 @@ export default function App() {
     try {
       const items = await recognizeMenuFiles(files, settings, setRecognizedCount);
       setRecognizedMenu(items);
+      setSampleMenuVisible(false);
       setCart({});
       setPage("menu");
       setScanStatus("finished");
@@ -580,11 +635,22 @@ export default function App() {
                   totalCurrency={totalCurrency}
                   totalCount={totalCount}
                   recognizedMenuCount={recognizedMenu.length}
+                  isUsingSampleMenu={isUsingSampleMenu}
                   imageGenerationEnabled={settings.enableImageGeneration}
+                  generatingImageIds={generatingImageIds}
                   setPage={setPage}
                   onOpenScanner={() => setScannerOpen(true)}
                   onPickImages={() => inputRef.current?.click()}
                   onResetAndReimport={resetAndReimport}
+                  onClearMenu={clearRecognizedMenu}
+                  onGenerateImage={(item) => {
+                    if (!settings.apiKey.trim()) {
+                      setToast("\u8BF7\u5148\u586B\u5199 API Key \u518D\u751F\u6210\u56FE\u7247");
+                      setScannerOpen(true);
+                      return;
+                    }
+                    void ensureDishImage(item);
+                  }}
                 />
               )}
 
@@ -662,11 +728,15 @@ function MenuPage({
   totalCurrency,
   totalCount,
   recognizedMenuCount,
+  isUsingSampleMenu,
   imageGenerationEnabled,
+  generatingImageIds,
   setPage,
   onOpenScanner,
   onPickImages,
   onResetAndReimport,
+  onClearMenu,
+  onGenerateImage,
 }: {
   menu: MenuItem[];
   tabs: string[];
@@ -679,11 +749,15 @@ function MenuPage({
   totalCurrency: string;
   totalCount: number;
   recognizedMenuCount: number;
+  isUsingSampleMenu: boolean;
   imageGenerationEnabled: boolean;
+  generatingImageIds: Record<string, boolean>;
   setPage: (page: AppPage) => void;
   onOpenScanner: () => void;
   onPickImages: () => void;
   onResetAndReimport: () => void;
+  onClearMenu: () => void;
+  onGenerateImage: (item: MenuItem) => void;
 }) {
   const list = menu.filter((item) => item.tab === activeTab);
 
@@ -705,6 +779,13 @@ function MenuPage({
               : "\u5BFC\u5165\u83DC\u5355\u56FE\u7247"}
           </button>
           <button
+            onClick={onClearMenu}
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-[#e1ccb0] bg-white/70"
+            title="\u6E05\u7A7A\u5F53\u524D\u83DC\u5355"
+          >
+            <Trash2 size={18} />
+          </button>
+          <button
             onClick={onOpenScanner}
             className="flex h-10 w-10 items-center justify-center rounded-full border border-[#e1ccb0] bg-white/70"
           >
@@ -716,27 +797,43 @@ function MenuPage({
       <div className="px-6 pb-2 text-xs font-medium text-[#8c6d53]">
         {recognizedMenuCount > 0
           ? "\u5F53\u524D\u663E\u793A AI \u8BC6\u522B\u7ED3\u679C\uFF0C\u4F1A\u4FDD\u7559\u83DC\u5355\u539F\u6587\u5E76\u6309\u83DC\u5355\u81EA\u8EAB\u7684\u5206\u7C7B\u6216\u6807\u9898\u751F\u6210\u6807\u7B7E"
-          : "\u5F53\u524D\u663E\u793A\u9ED1\u677F\u6D4B\u8BD5\u83DC\u5355\uFF0C\u70B9\u51FB\u53F3\u4E0A\u89D2\u5373\u53EF\u5BFC\u5165\u4EFB\u610F\u8BED\u8A00\u83DC\u5355\u56FE\u7247"}
+          : isUsingSampleMenu
+            ? "\u5F53\u524D\u663E\u793A\u9ED1\u677F\u6D4B\u8BD5\u83DC\u5355\uFF0C\u70B9\u51FB\u53F3\u4E0A\u89D2\u5373\u53EF\u5BFC\u5165\u4EFB\u610F\u8BED\u8A00\u83DC\u5355\u56FE\u7247"
+            : "\u5F53\u524D\u6CA1\u6709\u83DC\u5355\u3002\u70B9\u51FB\u53F3\u4E0A\u89D2\u53EF\u4EE5\u91CD\u65B0\u5BFC\u5165"}
       </div>
 
-      <div className="flex gap-3 overflow-x-auto px-6 pb-3">
-        {tabs.map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`shrink-0 rounded-full border px-6 py-2 font-bold ${
-              activeTab === tab
-                ? "border-[#8a4b12] bg-[#8a4b12] text-white"
-                : "border-[#dfc59f] bg-white/70 text-[#5b3315]"
-            }`}
-          >
-            {tab}
-          </button>
-        ))}
-      </div>
+      {tabs.length > 0 ? (
+        <div className="flex gap-3 overflow-x-auto px-6 pb-3">
+          {tabs.map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`shrink-0 rounded-full border px-6 py-2 font-bold ${
+                activeTab === tab
+                  ? "border-[#8a4b12] bg-[#8a4b12] text-white"
+                  : "border-[#dfc59f] bg-white/70 text-[#5b3315]"
+              }`}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       <div className="flex-1 overflow-y-auto px-5 pb-24">
-        {list.map((item) => {
+        {list.length === 0 ? (
+          <div className="flex h-full min-h-[360px] flex-col items-center justify-center text-center text-[#8c6d53]">
+            <div className="mb-3 text-lg font-bold">
+              {"\u5F53\u524D\u6CA1\u6709\u83DC\u5355"}
+            </div>
+            <button
+              onClick={onPickImages}
+              className="rounded-full bg-[#8a4b12] px-5 py-3 text-sm font-bold text-white"
+            >
+              {"\u4E0A\u4F20\u65B0\u83DC\u5355"}
+            </button>
+          </div>
+        ) : list.map((item) => {
           const isOrderable = item.price > 0;
           return (
             <div
@@ -745,10 +842,11 @@ function MenuPage({
             >
                 <FoodImage
                   title={item.chineseName}
-                  type={item.img}
                   photoUrl={item.photoUrl}
                   color={item.color}
                   imageGenerationEnabled={imageGenerationEnabled}
+                  isGenerating={Boolean(generatingImageIds[item.id])}
+                  onClick={() => onGenerateImage(item)}
                 />
 
                 <DishText item={item} />
@@ -863,7 +961,6 @@ function CartPage({
               <div className="flex gap-4">
                 <FoodImage
                   title={item.chineseName}
-                  type={item.img}
                   photoUrl={item.photoUrl}
                   color={item.color}
                   imageGenerationEnabled={imageGenerationEnabled}
@@ -979,7 +1076,6 @@ function WaiterPage({
               >
                 <FoodImage
                   title={item.chineseName}
-                  type={item.img}
                   photoUrl={item.photoUrl}
                   color={item.color}
                   imageGenerationEnabled={imageGenerationEnabled}
