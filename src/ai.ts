@@ -13,12 +13,12 @@ const USE_BACKEND_PROXY = import.meta.env.VITE_USE_BACKEND_PROXY !== "false";
 const OCR_CONCURRENCY = 6;
 const NORMALIZE_TIMEOUT_MS = 12000;
 const SCAN_CACHE_PREFIX = "aimenu-v5-scan-cache";
-const SCAN_CACHE_VERSION = "v6";
+const SCAN_CACHE_VERSION = "v7";
 const DEFAULT_MODEL =
   import.meta.env.VITE_SILICONFLOW_MODEL || "Pro/moonshotai/Kimi-K2.6";
 const DEFAULT_VISION_MODEL =
   import.meta.env.VITE_SILICONFLOW_VISION_MODEL ||
-  "deepseek-ai/DeepSeek-OCR";
+  "Pro/moonshotai/Kimi-K2.6";
 const DEFAULT_IMAGE_MODEL =
   import.meta.env.VITE_SILICONFLOW_IMAGE_MODEL || "Qwen/Qwen-Image";
 const DEFAULT_IMAGE_SIZE = "320x320";

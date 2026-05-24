@@ -11,7 +11,7 @@ const cacheDir = path.join(rootDir, ".cache", "recognize");
 const benchmarkScript = path.join(rootDir, "scripts", "benchmark-recognize.mjs");
 
 const model = process.argv[2] || "Pro/moonshotai/Kimi-K2.6";
-const visionModel = process.argv[3] || "deepseek-ai/DeepSeek-OCR";
+const visionModel = process.argv[3] || "Pro/moonshotai/Kimi-K2.6";
 
 async function clearCache() {
   await fs.rm(cacheDir, { recursive: true, force: true }).catch(() => {});

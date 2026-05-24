@@ -115,7 +115,7 @@ const untranslated = finalItems.filter((item) => {
   );
 });
 const dirty = finalItems.filter((item) =>
-  /菜单分类|"price"|小红书|水印/.test(`${item.tab} ${item.sourceText} ${item.chineseName}`),
+  /菜单分类|招牌菜|今日推荐|"price"|小红书|水印/.test(`${item.tab} ${item.sourceText} ${item.chineseName}`),
 );
 
 const duplicateKeys = new Map();

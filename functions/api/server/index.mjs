@@ -35,18 +35,18 @@ const DEFAULT_MODEL =
 const DEFAULT_VISION_MODEL =
   process.env.SILICONFLOW_VISION_MODEL ||
   process.env.VITE_SILICONFLOW_VISION_MODEL ||
-  "deepseek-ai/DeepSeek-OCR";
+  "Pro/moonshotai/Kimi-K2.6";
 const DEFAULT_IMAGE_MODEL =
   process.env.SILICONFLOW_IMAGE_MODEL ||
   process.env.VITE_SILICONFLOW_IMAGE_MODEL ||
   "Qwen/Qwen-Image";
 
-const SCAN_CACHE_VERSION = "server-v15";
+const SCAN_CACHE_VERSION = "server-v16";
 const OCR_SLICE_CONCURRENCY = 18;
 const NORMALIZER_CONCURRENCY = 12;
 const NORMALIZER_CHUNK_SIZE = 3;
 const STREAM_TRANSLATION_CONCURRENCY = 5;
-const ENABLE_STRUCTURED_RESCUE = false;
+const ENABLE_STRUCTURED_RESCUE = true;
 const NORMALIZE_TIMEOUT_MS = 18000;
 const OCR_FAST_TIMEOUT_MS = 7000;
 const OCR_SLOW_TIMEOUT_MS = 9000;
@@ -253,6 +253,72 @@ function translateCategoryToChinese(input) {
   if (/(甜品|甘味|デザート|dessert|sweet|샤베트)/i.test(cleaned)) return "甜品";
   if (/(메인|메뉴|메인요리|main)/i.test(cleaned)) return "主菜";
   return CATEGORY_FALLBACK;
+}
+
+function isGenericDisplayCategory(input = "") {
+  const normalized = normalizeLoose(input);
+  if (!normalized) return true;
+  const dirty = [
+    "\u83dc\u5355\u5206\u7c7b",
+    "\u83dc\u5355",
+    "\u62db\u724c\u83dc",
+    "\u63a8\u8350",
+    "\u4eca\u65e5\u63a8\u8350",
+    "\u672c\u65e5\u63a8\u8350",
+    "\u30e1\u30cb\u30e5\u30fc",
+    "\u30c9\u30ea\u30f3\u30af\u30e1\u30cb\u30e5\u30fc",
+    "\u672c\u65e5\u306e\u304a\u3059\u3059\u3081",
+    "\u672c\u65e5\u306e\u30aa\u30b9\u30b9\u30e1",
+    "\u304a\u3059\u3059\u3081",
+    "\u81ea\u6162\u306e\u4e00\u54c1",
+    "menu",
+    "category",
+    "recommend",
+    "recommended",
+    "special",
+  ].map(normalizeLoose);
+  return dirty.includes(normalized) || /menu|category|recommend|special/.test(normalized);
+}
+
+function inferCategoryFromDish(sourceText = "", chineseName = "", desc = "") {
+  const text = `${sourceText} ${chineseName} ${desc}`.toLowerCase();
+  if (/highball|beer|wine|cocktail|cola|coke|soda|sour|drink|beverage|\u30cf\u30a4\u30dc\u30fc\u30eb|\u30d3\u30fc\u30eb|\u30ef\u30a4\u30f3|\u30ab\u30af\u30c6\u30eb|\u9152|\u996e|\u996e\u6599|\u5564\u9152|\u9ad8\u7403|\u53ef\u4e50|\u30b3\u30fc\u30e9|\uC220|\uB9E5\uC8FC|\uC74C\uB8CC/.test(text)) {
+    return "\u9152\u6c34/\u996e\u6599";
+  }
+  if (/dessert|sweet|ice|sherbet|\u30c7\u30b6\u30fc\u30c8|\u30a2\u30a4\u30b9|\u751c\u54c1|\u51b0\u6dc7\u6dcb|\u6c99\u51b0|\u997c/.test(text)) {
+    return "\u751c\u54c1";
+  }
+  if (/salad|\u30b5\u30e9\u30c0|\u6c99\u62c9|\u751f\u83dc/.test(text)) return "\u6c99\u62c9";
+  if (/soup|stew|hotpot|\u30b9\u30fc\u30d7|\u6c64|\u934b|\u9505|\u7089|\u70e9|\u찌개|\u탕/.test(text)) {
+    return "\u6c64/\u7096\u9505";
+  }
+  if (/ramen|udon|noodle|pasta|\u30e9\u30fc\u30e1\u30f3|\u3046\u3069\u3093|\u9eba|\u9eb5|\u9762|\u62c9\u9762|\u51b7\u9762/.test(text)) {
+    return "\u9762\u7c7b";
+  }
+  if (/rice|bowl|don|curry|\u4e3c|\u98ef|\u996d|\u30ab\u30ec\u30fc|\u30d3\u30d3\u30f3\u30d0|\u5496\u55b1|\u4e3b\u98df/.test(text)) {
+    return "\u4e3b\u98df";
+  }
+  if (/fried|karaage|tempura|\u63da|\u3042\u3052|\u304b\u3089\u63da\u3052|\u5929\u3077\u3089|\u70b8|\u5929\u5987\u7f57/.test(text)) {
+    return "\u70b8\u7269";
+  }
+  if (/grill|bbq|yaki|steak|\u713c|\u713c\u304d|\u30b9\u30c6\u30fc\u30ad|\u70e4|\u70e7|\u94c1\u677f/.test(text)) {
+    return "\u70e7\u70e4/\u94c1\u677f";
+  }
+  if (/kimchi|pickle|namul|\u30ad\u30e0\u30c1|\u30ca\u30e0\u30eb|\u6ce1\u83dc|\u5c0f\u83dc|\u524d\u83dc|\u914d\u83dc|\u51c9\u62cc/.test(text)) {
+    return "\u524d\u83dc/\u5c0f\u83dc";
+  }
+  if (/sashimi|yukke|tartare|\u523a\u3057|\u30e6\u30c3\u30b1|\u523a\u8eab|\u751f\u62cc|\u51b7\u76d8/.test(text)) {
+    return "\u523a\u8eab/\u51b7\u76d8";
+  }
+  return "\u4e3b\u83dc";
+}
+
+function sanitizeFinalCategory(category, item = {}) {
+  const translated = translateStructuredJapaneseCategory(category) || translateCategoryToChinese(category);
+  if (isGenericDisplayCategory(translated)) {
+    return inferCategoryFromDish(item.sourceText, item.chineseName, item.desc);
+  }
+  return translated || inferCategoryFromDish(item.sourceText, item.chineseName, item.desc);
 }
 
 function getKoreanMenuOverride(sourceText, fallbackTranslation = "", fallbackCategory) {
@@ -1014,6 +1080,13 @@ function normalizeKnownMenuOcrVariant(input = "") {
 }
 
 function normalizeKnownMenuOcrPrice(original, price) {
+  if (
+    price >= 40 &&
+    price < 120 &&
+    /(丼|麺|麵|ラーメン|ちゃんぽん|カレー|ビビンバ|牛|豚|海鮮|焼|刺身|から揚げ|唐揚げ)/u.test(original)
+  ) {
+    return price * 10;
+  }
   if (/^(ブタ|イカ|エビ|Mix).*(玉|ネギ)$/.test(original) && price >= 90 && price < 200) {
     return price * 10;
   }
@@ -1505,6 +1578,57 @@ function getJapanesePronunciation(sourceText) {
   return map.find(([pattern]) => pattern.test(sourceText))?.[1] || "";
 }
 
+function dropObviousLowPriceDuplicates(items) {
+  const grouped = new Map();
+  for (const item of items) {
+    const key = [
+      normalizeLoose(item.langCode),
+      normalizeLoose(item.currency),
+      normalizeLoose(item.sourceText),
+    ].join("::");
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(item);
+  }
+
+  const lowPriceKeys = new Set();
+  const highPriceKeys = new Set();
+  for (const group of grouped.values()) {
+    if (group.length <= 1) continue;
+    const prices = group.map((item) => Number(item.price || 0)).filter((price) => price > 0);
+    const maxPrice = Math.max(...prices);
+    const minPrice = Math.min(...prices);
+    for (const item of group) {
+      const price = Number(item.price || 0);
+      if (price > 0 && price < 100 && maxPrice >= 300) {
+        lowPriceKeys.add([
+          normalizeLoose(item.langCode),
+          normalizeLoose(item.currency),
+          normalizeLoose(item.sourceText),
+          price,
+        ].join("::"));
+      }
+      if (minPrice >= 100 && price >= minPrice * 4 && price >= 1000) {
+        highPriceKeys.add([
+          normalizeLoose(item.langCode),
+          normalizeLoose(item.currency),
+          normalizeLoose(item.sourceText),
+          price,
+        ].join("::"));
+      }
+    }
+  }
+
+  return items.filter((item) => {
+    const key = [
+      normalizeLoose(item.langCode),
+      normalizeLoose(item.currency),
+      normalizeLoose(item.sourceText),
+      Number(item.price || 0),
+    ].join("::");
+    return !lowPriceKeys.has(key) && !highPriceKeys.has(key);
+  });
+}
+
 function mapRecognizedItems(items) {
   const mapped = compactItems(items).map((item, index) => {
     const sourceText = fixKnownOcrSourceText(stripMenuNoise(item.original || item.translation || "未命名菜品"));
@@ -1690,6 +1814,12 @@ function mapRecognizedItems(items) {
     if (/炒飯付|冷书|ラーメン|ちゃんぽん|セット|単品|大盛り|\+/.test(finalCategory)) {
       finalCategory = reliableTranslation?.category || (sourceLang === "ja-JP" ? "其他" : finalCategory);
     }
+    finalCategory = sanitizeFinalCategory(finalCategory, {
+      sourceText,
+      chineseName: forcedChineseName,
+      desc: item.desc,
+      langCode: sourceLang,
+    });
     const resolvedPronunciation =
       item.pronunciation || (sourceLang === "ja-JP" ? getJapanesePronunciation(sourceText) : "");
     const { phonetic, transliteration } = splitPronunciation(resolvedPronunciation);
@@ -1710,7 +1840,7 @@ function mapRecognizedItems(items) {
       langCode: sourceLang,
     };
   });
-  const deduped = collapseNearPriceMappedItems(dedupeMappedItems(mapped));
+  const deduped = dropObviousLowPriceDuplicates(collapseNearPriceMappedItems(dedupeMappedItems(mapped)));
 
   const shortKeyCounts = new Map();
   for (const item of deduped) {
