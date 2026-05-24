@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.github
+.cache
+test-results
+output
+*.log
+*.ndjson
+vite-dev.log
+vite-dev.err.log
+server-run.log
+server-run.err
+server.out.log
+server.err.log

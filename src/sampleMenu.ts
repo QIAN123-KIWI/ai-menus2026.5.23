@@ -1,6 +1,6 @@
 import type { FoodIllustration, MenuItem } from "./types";
 
-const YEN = "\u00A5";
+const YEN = "円";
 const TAB = "\u4ECA\u65E5\u63A8\u8350";
 
 const rows: Array<{

@@ -22,7 +22,9 @@ import {
   generateDishImageBlob,
   getDefaultSettings,
   getDishImageCacheKey,
+  isBackendProxyEnabled,
   recognizeMenuFiles,
+  requiresClientApiKey,
   sortTabs,
 } from "./ai";
 import {
@@ -34,27 +36,28 @@ import { SAMPLE_MENU } from "./sampleMenu";
 import type { AppPage, MenuItem, ScanStatus, Settings } from "./types";
 
 const STORAGE_KEYS = {
-  cart: "aimenu-v5-cart",
-  menu: "aimenu-v5-menu",
+  cart: "aimenu-v7-cart",
+  menu: "aimenu-v7-menu",
   settings: "aimenu-v5-settings",
   sampleVisible: "aimenu-v5-sample-visible",
 };
 
 const STALE_TEXT_MODELS = [
-  "Pro/moonshotai/Kimi-K2.6",
   "Qwen/Qwen2.5-7B-Instruct",
   "Qwen/Qwen3-14B",
 ];
 const STALE_VISION_MODELS = [
-  "Pro/moonshotai/Kimi-K2.6",
   "Qwen/Qwen2.5-VL-7B-Instruct",
   "deepseek-ai/DeepSeek-OCR",
+  "Qwen/Qwen3-VL-8B-Instruct",
   "Qwen/Qwen3-VL-32B-Instruct",
 ];
 const STALE_IMAGE_MODELS = ["black-forest-labs/FLUX.1-schnell", "Kwai-Kolors/Kolors"];
 const IMAGE_WORKER_COUNT = 2;
 const FALLBACK_TAB = "\u524D\u83DC";
-const YEN = "\u00A5";
+const YEN = "円";
+const CLIENT_API_KEY_REQUIRED = requiresClientApiKey();
+const BACKEND_PROXY_ENABLED = isBackendProxyEnabled();
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -85,6 +88,223 @@ function normalizeLoose(input?: string) {
   return input?.replace(/[\s\u3000.,_\-()]+/g, "").toLowerCase() || "";
 }
 
+function hasChineseText(input?: string) {
+  return /[\u4e00-\u9fff]/.test(String(input || ""));
+}
+
+function containsForeignMenuScript(input?: string) {
+  return /[\u3040-\u30ff\uac00-\ud7af\u0E00-\u0E7F]/.test(String(input || ""));
+}
+
+function looksLikeUntranslatedName(item: Pick<MenuItem, "chineseName" | "sourceText" | "langCode">) {
+  const chineseName = String(item.chineseName || "").trim();
+  const sourceText = String(item.sourceText || "").trim();
+  if (!chineseName) return true;
+  if (item.langCode === "zh-CN") return false;
+  return (
+    normalizeLoose(chineseName) === normalizeLoose(sourceText) ||
+    !hasChineseText(chineseName) ||
+    containsForeignMenuScript(chineseName)
+  );
+}
+
+function isKanaOnly(input?: string) {
+  return /^[\u3040-\u30ff\u30fc\s]+$/.test(String(input || "").trim());
+}
+
+function looksLikeHeadingText(input?: string) {
+  const value = String(input || "").trim();
+  if (!value) return true;
+  return /^(menu|drink menu|food menu|today'?s special|special|recommend|recommended|category|分類|菜单|菜單|菜单分类|ドリンクメニュー|本日のおすすめ|おすすめ|自慢の一品|今日推荐|招牌菜)$/i.test(
+    value,
+  );
+}
+
+function hasUsefulTab(input?: string) {
+  const value = normalizeLoose(input);
+  return Boolean(value && !["其他", normalizeLoose(FALLBACK_TAB)].includes(value));
+}
+
+function scoreMenuItem(item: MenuItem) {
+  let score = 0;
+  if (hasChineseText(item.chineseName) && !looksLikeUntranslatedName(item)) score += 6;
+  if (item.phonetic) score += 2;
+  if (item.transliteration) score += 1;
+  if (item.desc) score += 1;
+  if (hasUsefulTab(item.tab)) score += 1;
+  if (looksLikeHeadingText(item.sourceText) || looksLikeHeadingText(item.chineseName)) score -= 8;
+  if (isKanaOnly(item.sourceText) && item.phonetic) {
+    if (normalizeLoose(item.sourceText) === normalizeLoose(item.phonetic)) {
+      score += 2;
+    } else {
+      score -= 3;
+    }
+  }
+  return score;
+}
+
+function getMenuIdentityKeys(item: MenuItem) {
+  const price = Number(item.price || 0);
+  const currency = normalizeLoose(item.currency);
+  const keys = [`src:${normalizeLoose(item.sourceText)}:${price}:${currency}`];
+  const chinese = normalizeLoose(item.chineseName);
+  if (chinese && !looksLikeUntranslatedName(item)) {
+    keys.push(`zh:${chinese}:${price}:${currency}`);
+  }
+  const transliteration = normalizeLoose(item.transliteration);
+  if (transliteration) {
+    keys.push(`ro:${transliteration}:${price}:${currency}`);
+  }
+  return keys;
+}
+
+function dedupeMenuItems(items: MenuItem[]) {
+  const deduped: MenuItem[] = [];
+  const keyToIndex = new Map<string, number>();
+
+  for (const item of items) {
+    if (!item.sourceText || !item.chineseName || Number(item.price || 0) <= 0) continue;
+    const keys = getMenuIdentityKeys(item);
+    const existingIndexes = keys
+      .map((key) => keyToIndex.get(key))
+      .filter((index): index is number => index !== undefined);
+
+    if (existingIndexes.length === 0) {
+      const nextIndex = deduped.length;
+      deduped.push(item);
+      keys.forEach((key) => keyToIndex.set(key, nextIndex));
+      continue;
+    }
+
+    const winnerIndex = existingIndexes[0];
+    const current = deduped[winnerIndex];
+    const next =
+      scoreMenuItem(item) >= scoreMenuItem(current)
+        ? {
+            ...current,
+            ...item,
+            id: current.id,
+            photoUrl: current.photoUrl || item.photoUrl,
+            phonetic: item.phonetic || current.phonetic,
+            transliteration: item.transliteration || current.transliteration,
+            desc: item.desc || current.desc,
+          }
+        : current;
+
+    deduped[winnerIndex] = next;
+    getMenuIdentityKeys(next).forEach((key) => keyToIndex.set(key, winnerIndex));
+  }
+
+  return deduped;
+}
+
+function collapseNearPriceMenuItems(items: MenuItem[]) {
+  const grouped = new Map<string, MenuItem[]>();
+  for (const item of items) {
+    const key = [
+      normalizeLoose(item.langCode),
+      normalizeLoose(item.currency),
+      normalizeLoose(item.sourceText),
+    ].join("::");
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push(item);
+  }
+
+  const collapsed: MenuItem[] = [];
+  for (const group of grouped.values()) {
+    if (group.length <= 1) {
+      collapsed.push(...group);
+      continue;
+    }
+
+    const prices = group
+      .map((item) => Number(item.price || 0))
+      .filter((price) => price > 0)
+      .sort((left, right) => left - right);
+    const median = prices[Math.floor(prices.length / 2)] || prices[0] || 0;
+    const min = prices[0] || 0;
+    const max = prices[prices.length - 1] || 0;
+    const canCollapse = max - min <= Math.max(120, Math.floor(median * 0.22));
+
+    if (!canCollapse) {
+      collapsed.push(...group);
+      continue;
+    }
+
+    const winner = [...group].sort((left, right) => {
+      const scoreDelta = scoreMenuItem(right) - scoreMenuItem(left);
+      if (scoreDelta !== 0) return scoreDelta;
+      return Math.abs((left.price || 0) - median) - Math.abs((right.price || 0) - median);
+    })[0];
+
+    collapsed.push({
+      ...winner,
+      price:
+        [...group]
+          .map((item) => Number(item.price || 0))
+          .filter((price) => price > 0)
+          .sort((left, right) => Math.abs(left - median) - Math.abs(right - median))[0] || winner.price,
+    });
+  }
+
+  return collapsed;
+}
+
+function mergeMenuItems(existing: MenuItem[], incoming: MenuItem[]) {
+  const merged = [...existing];
+  const indexByKey = new Map<string, number>();
+
+  const makeKey = (item: MenuItem) =>
+    [
+      normalizeLoose(item.langCode),
+      normalizeLoose(item.sourceText),
+      normalizeLoose(item.currency),
+      item.price || 0,
+    ].join("::");
+
+  existing.forEach((item, index) => indexByKey.set(makeKey(item), index));
+
+  for (const item of incoming) {
+    const key = makeKey(item);
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex === undefined) {
+      indexByKey.set(key, merged.length);
+      merged.push(item);
+      continue;
+    }
+
+    merged[existingIndex] = {
+      ...merged[existingIndex],
+      ...item,
+      id: merged[existingIndex].id,
+      photoUrl: merged[existingIndex].photoUrl || item.photoUrl,
+      chineseName:
+        looksLikeUntranslatedName(item) && !looksLikeUntranslatedName(merged[existingIndex])
+          ? merged[existingIndex].chineseName
+          : item.chineseName,
+      phonetic: item.phonetic || merged[existingIndex].phonetic,
+      transliteration: item.transliteration || merged[existingIndex].transliteration,
+      tab:
+        item.tab === "其他" && merged[existingIndex].tab && merged[existingIndex].tab !== "其他"
+          ? merged[existingIndex].tab
+          : item.tab,
+      desc: item.desc || merged[existingIndex].desc,
+    };
+  }
+
+  return collapseNearPriceMenuItems(dedupeMenuItems(merged));
+}
+
+function isDisplayableMenuItem(item: MenuItem) {
+  const source = normalizeLoose(item.sourceText);
+  const name = normalizeLoose(item.chineseName);
+  if (!source || !name) return false;
+  if (item.price <= 0) return false;
+  if (/^(招牌菜|推荐|今日推荐|自慢の一品|本日のオススメ|ドリンクメニュー|tel)$/.test(source)) return false;
+  if (/^(招牌菜|推荐|今日推荐|自慢の一品|本日のオススメ|ドリンクメニュー|未翻译)$/.test(name)) return false;
+  return true;
+}
+
 function speakText(text: string, langCode = "ja-JP") {
   if (typeof window === "undefined" || !window.speechSynthesis || !text) return;
   window.speechSynthesis.cancel();
@@ -107,13 +327,106 @@ function speakOrder(items: MenuItem[], cart: Record<string, number>) {
   }
 }
 
+function normalizeDisplayCurrency(currency = YEN) {
+  const value = String(currency || "").trim();
+  if (!value || value === "\u00A5" || value.toUpperCase() === "JPY") return "円";
+  if (value === "₩" || value.toUpperCase() === "KRW") return "원";
+  if (value === "￥" || value.toUpperCase() === "CNY" || value.toUpperCase() === "RMB") return "元";
+  if (value === "฿" || value.toUpperCase() === "THB") return "บาท";
+  if (value === "₫" || value.toUpperCase() === "VND") return "đ";
+  return value;
+}
+
+function shouldPlaceCurrencyAfter(currency = YEN) {
+  return ["円", "원", "元", "บาท", "đ"].includes(normalizeDisplayCurrency(currency));
+}
+
+function normalizeCleanDisplayCurrency(currency = YEN) {
+  const value = String(currency || "").trim();
+  const normalized = value.toUpperCase();
+  if (!value || /^(JPY|YEN|JAPANESE YEN)$/i.test(value) || /[\u00A5\u5186]/.test(value)) return "\u5186";
+  if (/^(KRW|WON)$/i.test(value) || /[\u20A9\uC6D0]/.test(value)) return "\uC6D0";
+  if (/^(CNY|RMB)$/i.test(value) || /[\uFFE5\u5143]/.test(value)) return "\u5143";
+  if (/^(THB|BAHT)$/i.test(value) || /[\u0E3F]/.test(value) || value.includes("\u0E1A\u0E32\u0E17")) return "\u0E1A\u0E32\u0E17";
+  if (/^(VND|DONG)$/i.test(value) || /[\u20AB\u0111\u0110]/.test(value)) return "\u0111";
+  if (/^(USD|US\$|DOLLAR)$/i.test(value) || value === "$") return "$";
+  if (/^(EUR|EURO)$/i.test(value) || value === "\u20AC") return "\u20AC";
+  if (normalized.includes("KRW") || normalized.includes("WON")) return "\uC6D0";
+  if (normalized.includes("JPY") || normalized.includes("YEN")) return "\u5186";
+  if (normalized.includes("CNY") || normalized.includes("RMB")) return "\u5143";
+  return value;
+}
+
+function shouldPlaceCleanCurrencyAfter(currency = YEN) {
+  return ["\u5186", "\uC6D0", "\u5143", "\u0E1A\u0E32\u0E17", "\u0111"].includes(
+    normalizeCleanDisplayCurrency(currency),
+  );
+}
+
 function formatMoney(amount: number, currency = YEN) {
   if (amount <= 0) return "\u672A\u6807\u4EF7";
-  return `${currency}${Number(amount || 0).toLocaleString("zh-CN")}`;
+  const normalizedCurrency = normalizeCleanDisplayCurrency(currency);
+  const numeric = Number(amount || 0).toLocaleString("zh-CN");
+  return shouldPlaceCleanCurrencyAfter(normalizedCurrency)
+    ? `${numeric}${normalizedCurrency}`
+    : `${normalizedCurrency}${numeric}`;
 }
 
 function formatTotal(amount: number, currency = YEN) {
-  return `${currency}${Number(amount || 0).toLocaleString("zh-CN")}`;
+  const normalizedCurrency = normalizeCleanDisplayCurrency(currency);
+  const numeric = Number(amount || 0).toLocaleString("zh-CN");
+  return shouldPlaceCleanCurrencyAfter(normalizedCurrency)
+    ? `${numeric}${normalizedCurrency}`
+    : `${normalizedCurrency}${numeric}`;
+}
+
+function getWaiterCopy(langCode = "zh-CN") {
+  if (langCode === "ja-JP") {
+    return {
+      title: "店員さんに見せる / 原文確認",
+      sentence: "こちらをお願いします",
+      subtitle: "このページは注文したメニュー原文をそのまま表示します",
+      speak: "発音 / Speak",
+    };
+  }
+  if (langCode === "ko-KR") {
+    return {
+      title: "직원에게 보여주기 / 원문 확인",
+      sentence: "이걸로 주문할게요",
+      subtitle: "이 페이지는 주문한 메뉴 원문을 그대로 보여줍니다",
+      speak: "발음 / Speak",
+    };
+  }
+  if (langCode === "th-TH") {
+    return {
+      title: "ให้พนักงานดู / ตรวจต้นฉบับ",
+      sentence: "ขอสั่งตามนี้ครับ",
+      subtitle: "หน้านี้จะแสดงชื่อเมนูต้นฉบับที่สั่งไว้โดยตรง",
+      speak: "อ่านออกเสียง / Speak",
+    };
+  }
+  if (langCode === "vi-VN") {
+    return {
+      title: "Đưa cho nhân viên / Xác nhận nguyên văn",
+      sentence: "Cho tôi gọi những món này",
+      subtitle: "Trang này sẽ hiển thị nguyên văn món ăn đã chọn",
+      speak: "Phát âm / Speak",
+    };
+  }
+  if (langCode === "en-US") {
+    return {
+      title: "Show Waiter / Original Text",
+      sentence: "I'd like to order these items",
+      subtitle: "This page shows the original menu wording for confirmation",
+      speak: "Speak",
+    };
+  }
+  return {
+    title: "\u7ED9\u5E97\u5458\u770B / \u539F\u6587\u786E\u8BA4",
+    sentence: "\u8FD9\u4E9B\u83DC\u8BF7\u5E2E\u6211\u4E0B\u5355",
+    subtitle: "\u8FD9\u4E2A\u9875\u9762\u4F1A\u76F4\u63A5\u663E\u793A\u4F60\u70B9\u7684\u83DC\u5355\u539F\u6587\uFF0C\u65B9\u4FBF\u5E97\u5458\u786E\u8BA4",
+    speak: "\u64AD\u653E\u539F\u6587\u83DC\u540D",
+  };
 }
 
 function revokeObjectUrl(url?: string) {
@@ -288,7 +601,11 @@ export default function App() {
 
   const isUsingSampleMenu = recognizedMenu.length === 0 && sampleMenuVisible;
   const baseMenu =
-    recognizedMenu.length > 0 ? recognizedMenu : sampleMenuVisible ? SAMPLE_MENU : [];
+    recognizedMenu.length > 0
+      ? recognizedMenu.filter(isDisplayableMenuItem)
+      : sampleMenuVisible
+        ? SAMPLE_MENU
+        : [];
   const menu = useMemo(
     () =>
       baseMenu.map((item) =>
@@ -424,7 +741,7 @@ export default function App() {
 
   useEffect(() => {
     if (!settings.enableImageGeneration) return;
-    if (!settings.apiKey.trim()) return;
+    if (CLIENT_API_KEY_REQUIRED && !settings.apiKey.trim()) return;
     if (scanStatus === "processing") return;
 
     let cancelled = false;
@@ -528,7 +845,7 @@ export default function App() {
   }
 
   function ensureApiKeyBeforeImport() {
-    if (settings.apiKey.trim()) return true;
+    if (!CLIENT_API_KEY_REQUIRED || settings.apiKey.trim()) return true;
     setErrorMessage("\u8BF7\u5148\u586B\u5199 SiliconFlow API Key \u518D\u5F00\u59CB\u8BC6\u522B");
     setScannerOpen(true);
     setToast("\u8BF7\u5148\u586B\u5199 API Key");
@@ -563,7 +880,7 @@ export default function App() {
     const files = Array.from(event.target.files || []);
     if (files.length === 0) return;
 
-    if (!settings.apiKey.trim()) {
+    if (CLIENT_API_KEY_REQUIRED && !settings.apiKey.trim()) {
       setErrorMessage("\u8BF7\u5148\u586B\u5199 SiliconFlow API Key \u518D\u5F00\u59CB\u8BC6\u522B");
       setScannerOpen(true);
       event.target.value = "";
@@ -573,6 +890,7 @@ export default function App() {
     setErrorMessage("");
     setScanStatus("processing");
     setRecognizedCount(0);
+    let revealedResults = false;
 
     try {
       const items = await recognizeMenuFiles(
@@ -581,18 +899,23 @@ export default function App() {
         setRecognizedCount,
         (partialItems) => {
           if (partialItems.length === 0) return;
-          setRecognizedMenu(partialItems);
+          setRecognizedCount(partialItems.length);
+          if (!revealedResults) {
+            revealedResults = true;
+            setScannerOpen(false);
+          }
+          setRecognizedMenu((prev) => mergeMenuItems(prev, partialItems));
           setSampleMenuVisible(false);
           setPage("menu");
         },
       );
-      setRecognizedMenu(items);
+      setRecognizedCount(items.length);
+      setRecognizedMenu((prev) => mergeMenuItems(prev, items));
       setSampleMenuVisible(false);
-      setCart({});
       setPage("menu");
       setScanStatus("finished");
       setToast(
-        `\u8BC6\u522B\u5B8C\u6210\uFF0C\u5171\u5BFC\u5165 ${items.length} \u4E2A\u6761\u76EE`,
+        `\u8BC6\u522B\u5B8C\u6210\uFF0C\u672C\u6B21\u5BFC\u5165 ${items.length} \u4E2A\u6761\u76EE`,
       );
       setScannerOpen(false);
     } catch (error) {
@@ -702,7 +1025,7 @@ export default function App() {
                   onResetAndReimport={resetAndReimport}
                   onClearMenu={clearRecognizedMenu}
                   onGenerateImage={(item) => {
-                    if (!settings.apiKey.trim()) {
+                    if (CLIENT_API_KEY_REQUIRED && !settings.apiKey.trim()) {
                       setToast("\u8BF7\u5148\u586B\u5199 API Key \u518D\u751F\u6210\u56FE\u7247");
                       setScannerOpen(true);
                       return;
@@ -1117,8 +1440,7 @@ function WaiterPage({
   imageGenerationEnabled: boolean;
   setPage: (page: AppPage) => void;
 }) {
-  const sentence = "\u8FD9\u4E9B\u83DC\u8BF7\u5E2E\u6211\u4E0B\u5355";
-  const sentenceSub = "\u670D\u52A1\u5458\u9875\u9762\u9ED8\u8BA4\u76F4\u63A5\u663E\u793A\u83DC\u5355\u539F\u6587";
+  const waiterCopy = getWaiterCopy(selected[0]?.langCode || "zh-CN");
 
   return (
     <Page>
@@ -1129,17 +1451,17 @@ function WaiterPage({
         >
           <ChevronLeft size={26} />
         </button>
-        <div className="text-xl font-bold">
-          {"\u7ED9\u5E97\u5458\u770B / \u539F\u6587\u786E\u8BA4"}
-        </div>
+        <div className="text-xl font-bold">{waiterCopy.title}</div>
         <div className="w-10" />
       </header>
 
       <div className="flex-1 overflow-y-auto px-6 pb-6">
         <div className="rounded-3xl border border-[#ead7bf] bg-white p-6 shadow-lg">
-          <div className="mb-1 text-center text-[30px] font-black text-[#2f1b10]">{sentence}</div>
+          <div className="mb-1 text-center text-[30px] font-black text-[#2f1b10]">
+            {waiterCopy.sentence}
+          </div>
           <div className="mb-6 text-center text-base font-semibold text-[#8b6549]">
-            {sentenceSub}
+            {waiterCopy.subtitle}
           </div>
           <div className="border-t border-dashed border-[#d7b78c]" />
 
@@ -1181,7 +1503,7 @@ function WaiterPage({
             onClick={() => speakOrder(selected, cart)}
             className="mt-6 flex h-16 w-full items-center justify-center gap-3 rounded-2xl border border-[#d9b98b] bg-[#fff3df] text-2xl font-black text-[#6d3b12]"
           >
-            <Volume2 size={32} /> {"\u64AD\u653E\u539F\u6587\u83DC\u540D"}
+            <Volume2 size={32} /> {waiterCopy.speak}
           </button>
         </div>
       </div>
@@ -1303,16 +1625,24 @@ function ScannerSheet({
         <div className="space-y-4">
           <label className="block">
             <span className="mb-2 block text-sm font-bold text-[#6f4a2d]">
-              SiliconFlow API Key
+              {BACKEND_PROXY_ENABLED
+                ? "SiliconFlow API Key（服务端代理模式下可留空）"
+                : "SiliconFlow API Key"}
             </span>
             <input
               type="password"
               value={settings.apiKey}
               onChange={(event) => onSettingsChange({ apiKey: event.target.value })}
-              placeholder="sk-..."
+              placeholder={BACKEND_PROXY_ENABLED ? "服务端代理已接管，可不填写" : "sk-..."}
               className="w-full rounded-2xl border border-[#dfc59f] bg-white px-4 py-3 outline-none transition focus:border-[#9f5a18]"
             />
           </label>
+
+          {BACKEND_PROXY_ENABLED ? (
+            <div className="rounded-2xl border border-dashed border-[#d8b890] bg-[#fff4e3] px-4 py-3 text-xs leading-6 text-[#8c6d53]">
+              {"当前已启用服务端代理。导入菜单和点击无图生成时，会优先走服务端，不需要在浏览器里暴露 API Key。"}
+            </div>
+          ) : null}
 
           <label className="block">
             <span className="mb-2 block text-sm font-bold text-[#6f4a2d]">
